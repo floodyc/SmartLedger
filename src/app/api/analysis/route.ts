@@ -22,19 +22,19 @@ export async function GET(request: NextRequest) {
 
     switch (analysisType) {
       case 'dashboard':
-        return getDashboardStats(user.id, startDate, endDate)
+        return getDashboardStats(user.accountId, startDate, endDate)
       case 'cash-flow':
-        return getCashFlowAnalysis(user.id, months)
+        return getCashFlowAnalysis(user.accountId, months)
       case 'spending-categories':
-        return getSpendingCategories(user.id, startDate, endDate)
+        return getSpendingCategories(user.accountId, startDate, endDate)
       case 'budget-comparison':
-        return getBudgetComparison(user.id)
+        return getBudgetComparison(user.accountId)
       case 'recurring-expenses':
-        return getRecurringExpenses(user.id)
+        return getRecurringExpenses(user.accountId)
       case 'savings-goals':
-        return getSavingsGoals(user.id)
+        return getSavingsGoals(user.accountId)
       case 'net-worth':
-        return getNetWorthData(user.id, months)
+        return getNetWorthData(user.accountId, months)
       default:
         return NextResponse.json({ error: 'Invalid analysis type' }, { status: 400 })
     }
@@ -47,10 +47,10 @@ export async function GET(request: NextRequest) {
   }
 }
 
-async function getDashboardStats(userId: string, startDate: Date, endDate: Date) {
+async function getDashboardStats(accountId: string, startDate: Date, endDate: Date) {
   const transactions = await prisma.transaction.findMany({
     where: {
-      userId,
+      accountId,
       date: { gte: startDate, lte: endDate },
     },
   })
@@ -90,7 +90,7 @@ async function getDashboardStats(userId: string, startDate: Date, endDate: Date)
   })
 }
 
-async function getCashFlowAnalysis(userId: string, months: number) {
+async function getCashFlowAnalysis(accountId: string, months: number) {
   const data: CashFlowData[] = []
   const now = new Date()
 
@@ -100,7 +100,7 @@ async function getCashFlowAnalysis(userId: string, months: number) {
 
     const transactions = await prisma.transaction.findMany({
       where: {
-        userId,
+        accountId,
         date: { gte: monthStart, lte: monthEnd },
       },
     })
@@ -124,10 +124,10 @@ async function getCashFlowAnalysis(userId: string, months: number) {
   return NextResponse.json({ data })
 }
 
-async function getSpendingCategories(userId: string, startDate: Date, endDate: Date) {
+async function getSpendingCategories(accountId: string, startDate: Date, endDate: Date) {
   const transactions = await prisma.transaction.findMany({
     where: {
-      userId,
+      accountId,
       type: 'DEBIT',
       date: { gte: startDate, lte: endDate },
     },
@@ -158,17 +158,17 @@ async function getSpendingCategories(userId: string, startDate: Date, endDate: D
   return NextResponse.json({ categories, totalSpending })
 }
 
-async function getBudgetComparison(userId: string) {
+async function getBudgetComparison(accountId: string) {
   const currentMonth = startOfMonth(new Date())
   const monthEnd = endOfMonth(new Date())
 
   const [budgets, transactions] = await Promise.all([
     prisma.budget.findMany({
-      where: { userId, period: 'MONTHLY' },
+      where: { accountId, period: 'MONTHLY' },
     }),
     prisma.transaction.findMany({
       where: {
-        userId,
+        accountId,
         type: 'DEBIT',
         date: { gte: currentMonth, lte: monthEnd },
       },
@@ -197,11 +197,11 @@ async function getBudgetComparison(userId: string) {
   return NextResponse.json({ comparisons })
 }
 
-async function getRecurringExpenses(userId: string) {
+async function getRecurringExpenses(accountId: string) {
   // Find transactions that appear multiple times with similar amounts
   const transactions = await prisma.transaction.findMany({
     where: {
-      userId,
+      accountId,
       type: 'DEBIT',
     },
     orderBy: { date: 'desc' },
@@ -219,7 +219,7 @@ async function getRecurringExpenses(userId: string) {
 
   const recurring: RecurringExpense[] = []
 
-  for (const [description, txns] of Object.entries(descriptionGroups)) {
+  for (const [, txns] of Object.entries(descriptionGroups)) {
     if (txns.length >= 2) {
       // Check if amounts are similar (within 10%)
       const amounts = txns.map(t => t.amount)
@@ -265,9 +265,9 @@ async function getRecurringExpenses(userId: string) {
   return NextResponse.json({ recurring: recurring.slice(0, 20), totalAnnualCost })
 }
 
-async function getSavingsGoals(userId: string) {
+async function getSavingsGoals(accountId: string) {
   const goals = await prisma.savingsGoal.findMany({
-    where: { userId },
+    where: { accountId },
     orderBy: { createdAt: 'desc' },
   })
 
@@ -280,20 +280,18 @@ async function getSavingsGoals(userId: string) {
   return NextResponse.json({ goals: goalsWithProgress })
 }
 
-async function getNetWorthData(userId: string, months: number) {
+async function getNetWorthData(accountId: string, months: number) {
   // For now, calculate net worth from cumulative transactions
   // In a full app, this would track assets/liabilities separately
   const now = new Date()
   const data = []
-
-  let cumulativeNet = 0
 
   for (let i = months - 1; i >= 0; i--) {
     const monthEnd = endOfMonth(subMonths(now, i))
 
     const transactions = await prisma.transaction.findMany({
       where: {
-        userId,
+        accountId,
         date: { lte: monthEnd },
       },
     })
@@ -306,7 +304,7 @@ async function getNetWorthData(userId: string, months: number) {
       .filter(t => t.type === 'DEBIT')
       .reduce((sum, t) => sum + t.amount, 0)
 
-    cumulativeNet = totalIncome - totalExpenses
+    const cumulativeNet = totalIncome - totalExpenses
 
     data.push({
       date: format(monthEnd, 'MMM yyyy'),

@@ -15,8 +15,8 @@ export async function verifyPassword(password: string, hashedPassword: string): 
   return compare(password, hashedPassword)
 }
 
-export async function createToken(userId: string): Promise<string> {
-  const token = await new SignJWT({ userId })
+export async function createToken(userId: string, accountId: string): Promise<string> {
+  const token = await new SignJWT({ userId, accountId })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('7d')
     .setIssuedAt()
@@ -24,10 +24,13 @@ export async function createToken(userId: string): Promise<string> {
   return token
 }
 
-export async function verifyToken(token: string): Promise<{ userId: string } | null> {
+export async function verifyToken(token: string): Promise<{ userId: string; accountId: string } | null> {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET)
-    return { userId: payload.userId as string }
+    return {
+      userId: payload.userId as string,
+      accountId: payload.accountId as string
+    }
   } catch {
     return null
   }
@@ -53,7 +56,61 @@ export async function getCurrentUser() {
     },
   })
 
-  return user
+  if (!user) return null
+
+  return {
+    ...user,
+    accountId: payload.accountId,
+  }
+}
+
+export async function getCurrentUserWithAccount() {
+  const cookieStore = await cookies()
+  const token = cookieStore.get('auth-token')?.value
+
+  if (!token) return null
+
+  const payload = await verifyToken(token)
+  if (!payload) return null
+
+  const user = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    include: {
+      memberships: {
+        include: {
+          account: {
+            include: {
+              members: {
+                include: {
+                  user: {
+                    select: {
+                      id: true,
+                      name: true,
+                      email: true,
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  })
+
+  if (!user) return null
+
+  const currentMembership = user.memberships.find(m => m.accountId === payload.accountId)
+
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    accountId: payload.accountId,
+    role: currentMembership?.role || 'MEMBER',
+    account: currentMembership?.account || null,
+    memberships: user.memberships,
+  }
 }
 
 export async function setAuthCookie(token: string) {
@@ -70,4 +127,13 @@ export async function setAuthCookie(token: string) {
 export async function clearAuthCookie() {
   const cookieStore = await cookies()
   cookieStore.delete('auth-token')
+}
+
+export function generateInviteToken(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  let token = ''
+  for (let i = 0; i < 32; i++) {
+    token += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return token
 }

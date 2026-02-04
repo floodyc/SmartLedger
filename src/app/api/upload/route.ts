@@ -17,6 +17,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
+    // Check file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      return NextResponse.json(
+        { error: 'File too large. Maximum size is 10MB.' },
+        { status: 400 }
+      )
+    }
+
     const allowedTypes = [
       'application/pdf',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -39,9 +47,11 @@ export async function POST(request: NextRequest) {
     // Create document record
     const document = await prisma.document.create({
       data: {
-        userId: user.id,
+        accountId: user.accountId,
+        uploadedBy: user.id,
         filename: file.name,
         fileType: file.type || `application/${fileExtension}`,
+        fileSize: file.size,
         status: 'PROCESSING',
       },
     })
@@ -55,30 +65,43 @@ export async function POST(request: NextRequest) {
         await prisma.document.update({
           where: { id: document.id },
           data: {
-            status: 'FAILED',
-            errorMessage: 'No transactions could be extracted from the document',
+            status: 'COMPLETED',
+            processedAt: new Date(),
+            summary: 'No transactions found in this document. The file may not contain recognizable financial data.',
           },
         })
 
         return NextResponse.json({
           document,
           transactions: [],
-          message: 'No transactions could be extracted from the document',
+          message: 'Document processed but no transactions were found. Try uploading a bank statement or financial document with transaction data.',
         })
       }
 
       // Create transactions
-      const transactions = await prisma.transaction.createManyAndReturn({
-        data: parsedTransactions.map((t) => ({
-          userId: user.id,
-          documentId: document.id,
-          date: new Date(t.date),
-          description: t.description,
-          amount: t.amount,
-          type: t.type,
-          category: t.category || 'Other',
-        })),
-      })
+      const transactions = await prisma.$transaction(
+        parsedTransactions.map((t) =>
+          prisma.transaction.create({
+            data: {
+              accountId: user.accountId,
+              documentId: document.id,
+              addedBy: user.id,
+              date: new Date(t.date),
+              description: t.description,
+              amount: t.amount,
+              type: t.type,
+              category: t.category || 'Other',
+            },
+          })
+        )
+      )
+
+      // Generate summary
+      const totalCredits = parsedTransactions.filter(t => t.type === 'CREDIT').reduce((sum, t) => sum + t.amount, 0)
+      const totalDebits = parsedTransactions.filter(t => t.type === 'DEBIT').reduce((sum, t) => sum + t.amount, 0)
+      const categories = [...new Set(parsedTransactions.map(t => t.category))]
+
+      const summary = `Extracted ${transactions.length} transactions. Income: $${totalCredits.toFixed(2)}, Expenses: $${totalDebits.toFixed(2)}. Categories: ${categories.join(', ')}.`
 
       // Update document status
       await prisma.document.update({
@@ -86,11 +109,12 @@ export async function POST(request: NextRequest) {
         data: {
           status: 'COMPLETED',
           processedAt: new Date(),
+          summary,
         },
       })
 
       return NextResponse.json({
-        document,
+        document: { ...document, status: 'COMPLETED', summary },
         transactions,
         message: `Successfully extracted ${transactions.length} transactions`,
       })
@@ -101,19 +125,50 @@ export async function POST(request: NextRequest) {
         where: { id: document.id },
         data: {
           status: 'FAILED',
-          errorMessage: 'Failed to parse document. Please check the file format.',
+          errorMessage: 'Failed to parse document. Please ensure it contains readable financial data.',
         },
       })
 
       return NextResponse.json(
-        { error: 'Failed to parse document. Please check the file format.' },
+        { error: 'Failed to parse document. Please check the file format and ensure it contains financial data.' },
         { status: 400 }
       )
     }
   } catch (error) {
     console.error('Upload error:', error)
     return NextResponse.json(
-      { error: 'An error occurred during upload' },
+      { error: 'An error occurred during upload. Please try again.' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getCurrentUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const searchParams = request.nextUrl.searchParams
+    const limit = parseInt(searchParams.get('limit') || '20')
+
+    const documents = await prisma.document.findMany({
+      where: { accountId: user.accountId },
+      orderBy: { uploadedAt: 'desc' },
+      take: limit,
+      include: {
+        _count: {
+          select: { transactions: true }
+        }
+      }
+    })
+
+    return NextResponse.json({ documents })
+  } catch (error) {
+    console.error('Error fetching documents:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch documents' },
       { status: 500 }
     )
   }

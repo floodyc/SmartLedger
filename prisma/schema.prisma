@@ -1,5 +1,5 @@
 // SmartLedger Database Schema
-// Personal Finance Tracker
+// Personal Finance Tracker with Family/Shared Accounts
 
 generator client {
   provider = "prisma-client-js"
@@ -10,6 +10,70 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Account represents a shared financial account (personal or family)
+model Account {
+  id          String   @id @default(cuid())
+  name        String
+  type        AccountType @default(PERSONAL)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members      AccountMember[]
+  transactions Transaction[]
+  documents    Document[]
+  budgets      Budget[]
+  savingsGoals SavingsGoal[]
+  invitations  AccountInvitation[]
+
+  @@map("accounts")
+}
+
+enum AccountType {
+  PERSONAL
+  FAMILY
+  BUSINESS
+}
+
+// AccountMember links users to accounts with roles
+model AccountMember {
+  id        String   @id @default(cuid())
+  userId    String
+  accountId String
+  role      MemberRole @default(MEMBER)
+  joinedAt  DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, accountId])
+  @@map("account_members")
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+// Invitation for adding people to accounts
+model AccountInvitation {
+  id        String   @id @default(cuid())
+  accountId String
+  email     String
+  role      MemberRole @default(MEMBER)
+  invitedBy String
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  inviter   User     @relation(fields: [invitedBy], references: [id])
+
+  @@map("account_invitations")
+}
+
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
@@ -18,17 +82,15 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  transactions  Transaction[]
-  documents     Document[]
-  budgets       Budget[]
-  savingsGoals  SavingsGoal[]
+  memberships   AccountMember[]
+  invitationsSent AccountInvitation[]
 
   @@map("users")
 }
 
 model Transaction {
   id          String   @id @default(cuid())
-  userId      String
+  accountId   String
   date        DateTime
   description String
   amount      Float
@@ -38,14 +100,15 @@ model Transaction {
   notes       String?
   isRecurring Boolean  @default(false)
   documentId  String?
+  addedBy     String?  // User ID who added this transaction
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   document    Document? @relation(fields: [documentId], references: [id])
 
-  @@index([userId, date])
-  @@index([userId, category])
+  @@index([accountId, date])
+  @@index([accountId, category])
   @@map("transactions")
 }
 
@@ -56,18 +119,22 @@ enum TransactionType {
 
 model Document {
   id           String   @id @default(cuid())
-  userId       String
+  accountId    String
   filename     String
   fileType     String
+  fileSize     Int?
+  uploadedBy   String?  // User ID who uploaded
   uploadedAt   DateTime @default(now())
   processedAt  DateTime?
   status       DocumentStatus @default(PENDING)
   errorMessage String?
+  summary      String?  // AI-generated summary of the document
+  rawText      String?  // Extracted text for reference
 
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   transactions Transaction[]
 
-  @@index([userId])
+  @@index([accountId])
   @@map("documents")
 }
 
@@ -80,7 +147,7 @@ enum DocumentStatus {
 
 model Budget {
   id        String   @id @default(cuid())
-  userId    String
+  accountId String
   category  String
   amount    Float
   period    BudgetPeriod @default(MONTHLY)
@@ -89,9 +156,9 @@ model Budget {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, category, period])
+  @@unique([accountId, category, period])
   @@map("budgets")
 }
 
@@ -103,16 +170,40 @@ enum BudgetPeriod {
 
 model SavingsGoal {
   id           String   @id @default(cuid())
-  userId       String
+  accountId    String
   name         String
   targetAmount Float
   currentAmount Float   @default(0)
   targetDate   DateTime?
+  icon         String?  // Emoji or icon name
+  color        String?  // Color for display
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
+  @@index([accountId])
   @@map("savings_goals")
+}
+
+// Export records for accountant handoff
+model ExportRecord {
+  id          String   @id @default(cuid())
+  accountId   String
+  exportedBy  String
+  exportType  ExportType
+  dateFrom    DateTime
+  dateTo      DateTime
+  fileUrl     String?
+  format      String   // CSV, PDF, etc.
+  createdAt   DateTime @default(now())
+
+  @@map("export_records")
+}
+
+enum ExportType {
+  TRANSACTIONS
+  SUMMARY
+  TAX_REPORT
+  ACCOUNTANT_PACKAGE
 }

@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '100')
     const offset = parseInt(searchParams.get('offset') || '0')
 
-    const where: Record<string, unknown> = { userId: user.id }
+    const where: Record<string, unknown> = { accountId: user.accountId }
 
     if (startDate || endDate) {
       where.date = {}
@@ -60,14 +60,15 @@ export async function POST(request: NextRequest) {
 
     if (!date || !description || amount === undefined || !type || !category) {
       return NextResponse.json(
-        { error: 'Missing required fields' },
+        { error: 'Missing required fields: date, description, amount, type, and category are required' },
         { status: 400 }
       )
     }
 
     const transaction = await prisma.transaction.create({
       data: {
-        userId: user.id,
+        accountId: user.accountId,
+        addedBy: user.id,
         date: new Date(date),
         description,
         amount: Math.abs(amount),
@@ -88,6 +89,52 @@ export async function POST(request: NextRequest) {
   }
 }
 
+export async function PUT(request: NextRequest) {
+  try {
+    const user = await getCurrentUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const data = await request.json()
+    const { id, date, description, amount, type, category, merchant, notes } = data
+
+    if (!id) {
+      return NextResponse.json({ error: 'Transaction ID required' }, { status: 400 })
+    }
+
+    // Verify ownership
+    const existingTransaction = await prisma.transaction.findFirst({
+      where: { id, accountId: user.accountId },
+    })
+
+    if (!existingTransaction) {
+      return NextResponse.json({ error: 'Transaction not found' }, { status: 404 })
+    }
+
+    const transaction = await prisma.transaction.update({
+      where: { id },
+      data: {
+        ...(date && { date: new Date(date) }),
+        ...(description && { description }),
+        ...(amount !== undefined && { amount: Math.abs(amount) }),
+        ...(type && { type }),
+        ...(category && { category }),
+        merchant: merchant ?? existingTransaction.merchant,
+        notes: notes ?? existingTransaction.notes,
+      },
+    })
+
+    return NextResponse.json({ transaction })
+  } catch (error) {
+    console.error('Error updating transaction:', error)
+    return NextResponse.json(
+      { error: 'Failed to update transaction' },
+      { status: 500 }
+    )
+  }
+}
+
 export async function DELETE(request: NextRequest) {
   try {
     const user = await getCurrentUser()
@@ -103,7 +150,7 @@ export async function DELETE(request: NextRequest) {
 
     // Verify ownership
     const transaction = await prisma.transaction.findFirst({
-      where: { id, userId: user.id },
+      where: { id, accountId: user.accountId },
     })
 
     if (!transaction) {
