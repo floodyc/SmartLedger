@@ -144,17 +144,77 @@ function findColumn(headers: string[], possibilities: string[]): string | null {
   return null
 }
 
+// Parse CSV text manually when XLSX fails to detect delimiter
+function parseCSVManually(text: string): Record<string, unknown>[] {
+  const lines = text.split(/\r?\n/).filter(line => line.trim())
+  if (lines.length < 2) return []
+
+  // Parse header line - handle quoted fields
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+      if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim())
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    result.push(current.trim())
+    return result
+  }
+
+  const headers = parseCSVLine(lines[0])
+  const data: Record<string, unknown>[] = []
+
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCSVLine(lines[i])
+    const row: Record<string, unknown> = {}
+    headers.forEach((header, index) => {
+      // Try to parse numbers
+      const value = values[index] ?? ''
+      const numValue = parseFloat(value.replace(/[,$]/g, ''))
+      row[header] = !isNaN(numValue) && value.match(/^-?[$]?[\d,]+\.?\d*$/) ? numValue : value
+    })
+    data.push(row)
+  }
+
+  return data
+}
+
 export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
-  // Try parsing without cellDates first (keeps dates as strings)
+  // Try parsing with XLSX first
   const workbook = XLSX.read(buffer, { type: 'buffer' })
   const sheetName = workbook.SheetNames[0]
   const worksheet = workbook.Sheets[sheetName]
-  const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
+  let data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
   console.log('=== XLSX PARSE DEBUG ===')
   console.log('Sheet names:', workbook.SheetNames)
   console.log('Data rows:', data.length)
   console.log('First row raw:', JSON.stringify(data[0]))
+
+  // Check if CSV wasn't parsed correctly (single column containing commas)
+  if (data.length > 0) {
+    const headers = Object.keys(data[0])
+    if (headers.length === 1 && headers[0].includes(',')) {
+      console.log('CSV delimiter not detected, parsing manually...')
+      // Convert buffer to string and parse manually
+      const text = buffer.toString('utf-8')
+      data = parseCSVManually(text)
+      console.log('Manual parse result - rows:', data.length)
+      if (data.length > 0) {
+        console.log('Manual parse headers:', Object.keys(data[0]))
+        console.log('Manual parse first row:', JSON.stringify(data[0]))
+      }
+    }
+  }
 
   if (data.length === 0) {
     console.log('No data rows found!')
