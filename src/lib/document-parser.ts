@@ -583,13 +583,28 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     // Try to split on transaction patterns (e.g., RBC statements)
     const fullText = lines.join(' ')
     if (fullText.length > 500) {
-      // RBC format: "MMM DD MMM DD description $amount" - split before month names followed by numbers
-      const splitPattern = /(?=(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s)/gi
-      const splitLines = fullText.split(splitPattern).filter(l => l.trim().length > 10)
-      if (splitLines.length > 5) {
-        console.log('Re-split merged text into', splitLines.length, 'potential transaction lines')
-        lines = splitLines
-        parserUsed = parserUsed + '-resplit'
+      console.log('Attempting to re-split merged text, length:', fullText.length)
+
+      // Try multiple split patterns for different bank statement formats
+      const splitPatterns = [
+        // RBC Credit Card: "MMM DD MMM DD description $amount"
+        { pattern: /(?=(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s)/gi, name: 'rbc-cc' },
+        // RBC Savings/Chequing: "MMM DD description amount" (single date)
+        { pattern: /(?=(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s+[A-Z])/gi, name: 'rbc-bank' },
+        // Numeric dates: "MM/DD" or "DD/MM" followed by text
+        { pattern: /(?=\d{1,2}\/\d{1,2}\s+[A-Z])/gi, name: 'numeric-date' },
+        // Amount followed by date patterns (split before dollar amounts)
+        { pattern: /(?=\$[\d,]+\.\d{2}\s)/g, name: 'amount-split' },
+      ]
+
+      for (const { pattern, name } of splitPatterns) {
+        const splitLines = fullText.split(pattern).filter(l => l.trim().length > 10)
+        if (splitLines.length > 5) {
+          console.log(`Re-split using ${name} pattern into`, splitLines.length, 'potential transaction lines')
+          lines = splitLines
+          parserUsed = parserUsed + `-resplit-${name}`
+          break
+        }
       }
     }
   }
@@ -605,7 +620,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
         sampleRows: [],
         skippedRows: [{
-          reason: `Only ${lines.length} lines extracted. This PDF may use a complex layout or be image-based. Please try: 1) Download as CSV from your bank's website, 2) Copy transactions to a spreadsheet. Sample: ${lines.slice(0, 3).join(' | ').substring(0, 200)}`,
+          reason: `Only ${lines.length} lines extracted. This PDF may use a complex layout or be image-based. Please try: 1) Download as CSV from your bank's website, 2) Copy transactions to a spreadsheet. Sample (first 500 chars): ${lines.join(' ').substring(0, 500)}`,
           rawDate: null,
           rawAmount: null
         }]
@@ -621,17 +636,25 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
 
   // Extensive transaction patterns for different bank statement formats
   const patterns = [
-    // RBC Canadian format: "DEC 10 DEC 15 SAFEWAY # 4977 COQUITLAM BC ... $130.96"
+    // RBC Credit Card format: "DEC 10 DEC 15 SAFEWAY # 4977 COQUITLAM BC ... $130.96"
     // Transaction date, posting date, description, amount
     {
       regex: /^([A-Z]{3}\s+\d{1,2})\s+[A-Z]{3}\s+\d{1,2}\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/i,
-      name: 'rbc-canadian',
+      name: 'rbc-cc',
       monthName: true
     },
-    // RBC with negative (refund): same pattern but captures negative
+
+    // RBC Savings/Chequing format: "DEC 10 description $amount" (single date)
     {
-      regex: /^([A-Z]{3}\s+\d{1,2})\s+[A-Z]{3}\s+\d{1,2}\s+(.+?)\s+(-\$?[\d,]+\.\d{2})\s*$/i,
-      name: 'rbc-canadian-refund',
+      regex: /^([A-Z]{3}\s+\d{1,2})\s+([A-Z].+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/i,
+      name: 'rbc-bank',
+      monthName: true
+    },
+
+    // RBC Savings with balance: "DEC 10 description amount balance" - capture just amount
+    {
+      regex: /^([A-Z]{3}\s+\d{1,2})\s+([A-Z].+?)\s+(-?\$?[\d,]+\.\d{2})\s+\$?[\d,]+\.\d{2}\s*$/i,
+      name: 'rbc-bank-balance',
       monthName: true
     },
 
