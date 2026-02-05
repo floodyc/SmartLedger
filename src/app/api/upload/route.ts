@@ -3,6 +3,10 @@ import { getCurrentUser } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { parseDocument } from '@/lib/document-parser'
 
+// Force Node.js runtime for PDF and document parsing libraries
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
 export async function POST(request: NextRequest) {
   try {
     const user = await getCurrentUser()

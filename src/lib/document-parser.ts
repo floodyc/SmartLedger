@@ -169,42 +169,61 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
 }
 
 export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const pdfParse = require('pdf-parse')
-  const data = await pdfParse(buffer)
-  const text = data.text as string
+  try {
+    // Use pdf-parse with options to avoid test file issues in serverless
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfParse = require('pdf-parse/lib/pdf-parse')
+    const data = await pdfParse(buffer, {
+      // Disable test file loading which causes issues in serverless
+      max: 0,
+    })
+    const text = data.text as string
 
-  const transactions: ParsedTransaction[] = []
-  const lines = text.split('\n').filter(line => line.trim())
+    const transactions: ParsedTransaction[] = []
+    const lines = text.split('\n').filter(line => line.trim())
 
-  // Look for patterns that indicate transaction lines
-  const transactionPattern = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)/
+    // Multiple transaction patterns to catch different bank statement formats
+    const patterns = [
+      // Pattern 1: Date Description Amount (standard)
+      /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)\s*$/,
+      // Pattern 2: Date Description Amount with trailing text
+      /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.{10,}?)\s+(-?\$?[\d,]+\.?\d{2})/,
+      // Pattern 3: YYYY-MM-DD format
+      /(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)/,
+    ]
 
-  for (const line of lines) {
-    const match = line.match(transactionPattern)
-    if (match) {
-      const [, dateStr, description, amountStr] = match
-      const date = parseDate(dateStr)
+    for (const line of lines) {
+      for (const pattern of patterns) {
+        const match = line.match(pattern)
+        if (match) {
+          const [, dateStr, description, amountStr] = match
+          const date = parseDate(dateStr)
 
-      if (!date) continue
+          if (!date) continue
 
-      const amount = parseAmount(amountStr)
-      if (amount === 0) continue
+          const amount = parseAmount(amountStr)
+          if (amount === 0) continue
 
-      const type: 'CREDIT' | 'DEBIT' = amountStr.includes('-') ? 'DEBIT' : 'CREDIT'
-      const category = detectCategory(description)
+          const type: 'CREDIT' | 'DEBIT' = amountStr.includes('-') ? 'DEBIT' : 'CREDIT'
+          const category = detectCategory(description)
 
-      transactions.push({
-        date: date.toISOString(),
-        description: description.trim(),
-        amount,
-        type,
-        category,
-      })
+          transactions.push({
+            date: date.toISOString(),
+            description: description.trim(),
+            amount,
+            type,
+            category,
+          })
+          break // Found a match, move to next line
+        }
+      }
     }
-  }
 
-  return transactions
+    return transactions
+  } catch (error) {
+    console.error('PDF parsing error:', error)
+    throw new Error('Failed to parse PDF file. The file may be corrupted or password-protected.')
+  }
 }
 
 export async function parseWordFile(buffer: Buffer): Promise<ParsedTransaction[]> {
