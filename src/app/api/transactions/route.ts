@@ -142,7 +142,19 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { id } = await request.json()
+    const { id, deleteAll } = await request.json()
+
+    // Delete all transactions
+    if (deleteAll) {
+      const result = await prisma.transaction.deleteMany({
+        where: { accountId: user.accountId }
+      })
+      return NextResponse.json({
+        success: true,
+        deletedCount: result.count,
+        message: `Deleted ${result.count} transactions`
+      })
+    }
 
     if (!id) {
       return NextResponse.json({ error: 'Transaction ID required' }, { status: 400 })

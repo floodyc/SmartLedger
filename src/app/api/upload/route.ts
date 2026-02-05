@@ -179,3 +179,69 @@ export async function GET(request: NextRequest) {
     )
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const user = await getCurrentUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { id, deleteAll } = await request.json()
+
+    if (deleteAll) {
+      // Delete all documents and their transactions for this account
+      // First delete transactions (to avoid foreign key issues if cascade not set)
+      await prisma.transaction.deleteMany({
+        where: { accountId: user.accountId }
+      })
+
+      // Then delete documents
+      const result = await prisma.document.deleteMany({
+        where: { accountId: user.accountId }
+      })
+
+      return NextResponse.json({
+        success: true,
+        deletedCount: result.count,
+        message: `Deleted all documents and transactions`
+      })
+    }
+
+    if (!id) {
+      return NextResponse.json({ error: 'Document ID required' }, { status: 400 })
+    }
+
+    // Verify ownership
+    const document = await prisma.document.findFirst({
+      where: { id, accountId: user.accountId },
+      include: { _count: { select: { transactions: true } } }
+    })
+
+    if (!document) {
+      return NextResponse.json({ error: 'Document not found' }, { status: 404 })
+    }
+
+    // Delete associated transactions first
+    await prisma.transaction.deleteMany({
+      where: { documentId: id }
+    })
+
+    // Then delete the document
+    await prisma.document.delete({
+      where: { id }
+    })
+
+    return NextResponse.json({
+      success: true,
+      deletedTransactions: document._count.transactions,
+      message: `Deleted document and ${document._count.transactions} transactions`
+    })
+  } catch (error) {
+    console.error('Error deleting document:', error)
+    return NextResponse.json(
+      { error: 'Failed to delete document' },
+      { status: 500 }
+    )
+  }
+}

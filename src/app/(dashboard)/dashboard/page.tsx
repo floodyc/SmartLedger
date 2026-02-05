@@ -8,6 +8,7 @@ import { FileUploader } from '@/components/dashboard/file-uploader'
 import { StatsCards } from '@/components/dashboard/stats-cards'
 import { AnalysisButtons } from '@/components/dashboard/analysis-buttons'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
+import { UploadedDocuments } from '@/components/dashboard/uploaded-documents'
 import { BudgetManager } from '@/components/dashboard/budget-manager'
 import { SavingsGoals } from '@/components/dashboard/savings-goals'
 import { FamilyMembers } from '@/components/dashboard/family-members'
@@ -204,9 +205,12 @@ export default function DashboardPage() {
           {/* Two Column Layout - Upload and Transactions */}
           <div className="grid lg:grid-cols-2 gap-8">
             {/* Upload Section */}
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload Documents</h2>
-              <FileUploader onUploadComplete={handleUploadComplete} />
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload Documents</h2>
+                <FileUploader onUploadComplete={handleUploadComplete} />
+              </div>
+              <UploadedDocuments onDocumentDeleted={fetchDashboardData} />
             </div>
 
             {/* Recent Transactions */}
@@ -219,6 +223,10 @@ export default function DashboardPage() {
                 fetch('/api/analysis?type=dashboard')
                   .then(res => res.json())
                   .then(data => { if (data.stats) setStats(data.stats) })
+              }}
+              onClearAll={() => {
+                setTransactions([])
+                fetchDashboardData()
               }}
             />
           </div>

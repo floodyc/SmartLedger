@@ -11,11 +11,13 @@ interface RecentTransactionsProps {
   transactions: Transaction[]
   loading: boolean
   onDelete?: (id: string) => void
+  onClearAll?: () => void
 }
 
-export function RecentTransactions({ transactions, loading, onDelete }: RecentTransactionsProps) {
+export function RecentTransactions({ transactions, loading, onDelete, onClearAll }: RecentTransactionsProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
+  const [clearingAll, setClearingAll] = useState(false)
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this transaction?')) return
@@ -35,6 +37,27 @@ export function RecentTransactions({ transactions, loading, onDelete }: RecentTr
       console.error('Error deleting transaction:', error)
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  const handleClearAll = async () => {
+    if (!confirm(`Delete ALL ${transactions.length} transactions?\n\nThis action cannot be undone.`)) return
+
+    setClearingAll(true)
+    try {
+      const res = await fetch('/api/transactions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deleteAll: true }),
+      })
+
+      if (res.ok && onClearAll) {
+        onClearAll()
+      }
+    } catch (error) {
+      console.error('Error clearing transactions:', error)
+    } finally {
+      setClearingAll(false)
     }
   }
   if (loading) {
@@ -84,7 +107,24 @@ export function RecentTransactions({ transactions, loading, onDelete }: RecentTr
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Recent Transactions</CardTitle>
-        <span className="text-sm text-gray-500">{transactions.length} total</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-500">{transactions.length} total</span>
+          {transactions.length > 0 && (
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleClearAll}
+              disabled={clearingAll}
+            >
+              {clearingAll ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-1" />
+              )}
+              Clear All
+            </Button>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
