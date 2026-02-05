@@ -5,6 +5,12 @@ import * as XLSX from 'xlsx'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
+function excelSerialToDate(serial: number): Date {
+  const utcDays = serial - 25569
+  const utcMs = utcDays * 86400 * 1000
+  return new Date(utcMs)
+}
+
 export async function POST(request: NextRequest) {
   try {
     const user = await getCurrentUser()
@@ -20,7 +26,6 @@ export async function POST(request: NextRequest) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer())
-    const extension = file.name.toLowerCase().split('.').pop()
 
     // Raw xlsx parse
     const workbook = XLSX.read(buffer, { type: 'buffer' })
@@ -28,23 +33,54 @@ export async function POST(request: NextRequest) {
     const worksheet = workbook.Sheets[sheetName]
     const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
-    // Also try with raw: true to see raw cell values
-    const rawData = XLSX.utils.sheet_to_json(worksheet, { raw: true }) as Record<string, unknown>[]
-
-    // Get headers
     const headers = data.length > 0 ? Object.keys(data[0]) : []
+
+    // Try to parse each row and show what happens
+    const parseAttempts = data.slice(0, 5).map((row, idx) => {
+      const dateValue = row['Date'] ?? row[headers[0]]
+      const descValue = row['Description'] ?? row[headers[1]]
+      const amountValue = row['Amount'] ?? row[headers[2]]
+
+      let parsedDate = null
+      let dateError = null
+
+      if (typeof dateValue === 'number' && dateValue > 25000 && dateValue < 60000) {
+        try {
+          parsedDate = excelSerialToDate(dateValue).toISOString()
+        } catch (e) {
+          dateError = String(e)
+        }
+      } else if (typeof dateValue === 'string') {
+        const d = new Date(dateValue)
+        if (!isNaN(d.getTime())) {
+          parsedDate = d.toISOString()
+        } else {
+          dateError = 'Could not parse string date'
+        }
+      } else {
+        dateError = `Unexpected type: ${typeof dateValue}`
+      }
+
+      return {
+        rowIndex: idx,
+        rawDate: dateValue,
+        dateType: typeof dateValue,
+        parsedDate,
+        dateError,
+        rawDesc: descValue,
+        rawAmount: amountValue,
+        amountType: typeof amountValue,
+        parsedAmount: typeof amountValue === 'number' ? Math.abs(amountValue) : parseFloat(String(amountValue).replace(/[^0-9.-]/g, '')),
+        isNegative: typeof amountValue === 'number' ? amountValue < 0 : String(amountValue).includes('-'),
+      }
+    })
 
     return NextResponse.json({
       filename: file.name,
-      extension,
-      fileSize: file.size,
-      mimeType: file.type,
-      sheetNames: workbook.SheetNames,
       headers,
       rowCount: data.length,
-      firstThreeRows: data.slice(0, 3),
-      rawFirstThreeRows: rawData.slice(0, 3),
-      worksheetRange: worksheet['!ref'],
+      firstRow: data[0],
+      parseAttempts,
     })
   } catch (error) {
     console.error('Debug parse error:', error)
