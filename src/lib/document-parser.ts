@@ -462,37 +462,133 @@ function processData(data: Record<string, unknown>[], parserVersion: string): Pa
   }
 }
 
-export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
-  let text = ''
-  let pdfError: string | null = null
+// Helper function to extract text using pdfreader (table-aware)
+async function extractWithPdfReader(buffer: Buffer): Promise<{ lines: string[]; error: string | null }> {
+  return new Promise((resolve) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { PdfReader } = require('pdfreader')
+      const reader = new PdfReader()
 
+      const rows: Map<number, { x: number; text: string }[]> = new Map()
+      let currentPage = 0
+
+      reader.parseBuffer(buffer, (err: Error | null, item: { page?: number; y?: number; x?: number; text?: string } | null) => {
+        if (err) {
+          console.error('pdfreader error:', err)
+          resolve({ lines: [], error: err.message })
+          return
+        }
+
+        if (!item) {
+          // End of file - consolidate rows into lines
+          const allLines: string[] = []
+          const sortedYs = Array.from(rows.keys()).sort((a, b) => a - b)
+
+          for (const y of sortedYs) {
+            const rowItems = rows.get(y)!.sort((a, b) => a.x - b.x)
+            const lineText = rowItems.map(r => r.text).join(' ').trim()
+            if (lineText) {
+              allLines.push(lineText)
+            }
+          }
+
+          console.log('pdfreader extracted lines:', allLines.length)
+          resolve({ lines: allLines, error: null })
+          return
+        }
+
+        if (item.page) {
+          currentPage = item.page
+          // Reset rows for new page (or accumulate across pages)
+        }
+
+        if (item.text && item.y !== undefined && item.x !== undefined) {
+          // Round y to group items on same line (PDFs can have slight y variations)
+          const roundedY = Math.round(item.y * 10) / 10
+
+          if (!rows.has(roundedY)) {
+            rows.set(roundedY, [])
+          }
+          rows.get(roundedY)!.push({ x: item.x, text: item.text })
+        }
+      })
+
+      // Timeout fallback
+      setTimeout(() => {
+        resolve({ lines: [], error: 'PDF parsing timed out' })
+      }, 30000)
+    } catch (err) {
+      resolve({ lines: [], error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+}
+
+export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
+  let lines: string[] = []
+  let pdfError: string | null = null
+  let parserUsed = 'unpdf'
+
+  // First try unpdf (works well for simple PDFs)
   try {
-    // Use unpdf which is designed for serverless environments
     const { extractText, getDocumentProxy } = await import('unpdf')
     const uint8Array = new Uint8Array(buffer)
     const pdf = await getDocumentProxy(uint8Array)
     const { text: extractedText } = await extractText(pdf, { mergePages: true })
-    text = extractedText || ''
-    console.log('PDF text extracted with unpdf, length:', text.length)
+    const text = extractedText || ''
+    lines = text.split('\n').filter(line => line.trim())
+    console.log('unpdf extracted lines:', lines.length)
   } catch (err) {
     console.error('unpdf failed:', err)
     pdfError = err instanceof Error ? err.message : String(err)
   }
 
-  // If PDF parsing failed completely, return helpful error
-  if (pdfError || !text) {
+  // If unpdf got very little content, try pdfreader (better for tables)
+  if (lines.length < 10) {
+    console.log('unpdf got few lines, trying pdfreader...')
+    const pdfReaderResult = await extractWithPdfReader(buffer)
+
+    if (pdfReaderResult.lines.length > lines.length) {
+      lines = pdfReaderResult.lines
+      parserUsed = 'pdfreader'
+      pdfError = null // Clear any unpdf error since pdfreader worked
+      console.log('pdfreader extracted more content:', lines.length, 'lines')
+    } else if (pdfReaderResult.error && !pdfError) {
+      pdfError = pdfReaderResult.error
+    }
+  }
+
+  // If both parsers failed, return helpful error
+  if (pdfError && lines.length === 0) {
     return {
       transactions: [],
       debug: {
-        parserVersion: 'pdf-v3-unpdf-failed',
+        parserVersion: 'pdf-v4-both-failed',
         rowCount: 0,
         headers: ['PDF parsing failed'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
         sampleRows: [],
         skippedRows: [{
-          reason: pdfError
-            ? `PDF parsing failed: ${pdfError}. This often happens with scanned PDFs or complex layouts. Try these alternatives: 1) Export your statement as CSV from your bank's website, 2) Copy the transactions into Excel and save as CSV, 3) Use a simpler PDF format.`
-            : 'PDF contained no readable text. The PDF may be image-based (scanned). Please export as CSV from your bank or manually enter transactions.',
+          reason: `PDF parsing failed: ${pdfError}. This often happens with scanned PDFs or complex layouts. Try these alternatives: 1) Export your statement as CSV from your bank's website, 2) Copy the transactions into Excel and save as CSV, 3) Use a simpler PDF format.`,
+          rawDate: null,
+          rawAmount: null
+        }]
+      }
+    }
+  }
+
+  // Check if we got very little text
+  if (lines.length < 5) {
+    return {
+      transactions: [],
+      debug: {
+        parserVersion: `pdf-v4-${parserUsed}-insufficient`,
+        rowCount: lines.length,
+        headers: ['PDF has complex layout'],
+        columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+        sampleRows: [],
+        skippedRows: [{
+          reason: `Only ${lines.length} lines extracted. This PDF may use a complex layout or be image-based. Please try: 1) Download as CSV from your bank's website, 2) Copy transactions to a spreadsheet. Sample: ${lines.slice(0, 3).join(' | ')}`,
           rawDate: null,
           rawAmount: null
         }]
@@ -501,7 +597,6 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   }
 
   const transactions: ParsedTransaction[] = []
-  const lines = text.split('\n').filter(line => line.trim())
   const skippedSamples: Array<{ line: string; reason: string }> = []
 
   // Extensive transaction patterns for different bank statement formats
@@ -621,7 +716,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     return {
       transactions: [],
       debug: {
-        parserVersion: 'pdf-v3-unpdf-no-transactions',
+        parserVersion: `pdf-v4-${parserUsed}-no-transactions`,
         rowCount: lines.length,
         headers: ['PDF text extracted but no transactions matched'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
@@ -644,7 +739,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   return {
     transactions,
     debug: {
-      parserVersion: 'pdf-v3-unpdf-success',
+      parserVersion: `pdf-v4-${parserUsed}-success`,
       rowCount: lines.length,
       headers: ['PDF parsed successfully'],
       columnMapping: { dateCol: 'auto', descCol: 'auto', amountCol: 'auto', typeCol: null },
