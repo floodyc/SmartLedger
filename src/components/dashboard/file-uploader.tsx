@@ -2,8 +2,31 @@
 
 import { useCallback, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { Upload, FileText, CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+interface DebugInfo {
+  rowCount: number
+  headers: string[]
+  columnMapping: {
+    dateCol: string | null
+    descCol: string | null
+    amountCol: string | null
+    typeCol: string | null
+  }
+  sampleRows: Array<{
+    rawDate: unknown
+    rawDesc: unknown
+    rawAmount: unknown
+    parsedDate: string | null
+    parsedAmount: number
+  }>
+  skippedRows: Array<{
+    reason: string
+    rawDate: unknown
+    rawAmount: unknown
+  }>
+}
 
 interface FileUploaderProps {
   onUploadComplete: () => void
@@ -13,6 +36,8 @@ export function FileUploader({ onUploadComplete }: FileUploaderProps) {
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [message, setMessage] = useState('')
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
+  const [showDebug, setShowDebug] = useState(false)
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return
@@ -21,6 +46,8 @@ export function FileUploader({ onUploadComplete }: FileUploaderProps) {
     setUploading(true)
     setUploadStatus('idle')
     setMessage('')
+    setDebugInfo(null)
+    setShowDebug(false)
 
     const formData = new FormData()
     formData.append('file', file)
@@ -39,8 +66,15 @@ export function FileUploader({ onUploadComplete }: FileUploaderProps) {
         return
       }
 
-      setUploadStatus('success')
-      setMessage(data.message || 'File uploaded successfully')
+      // Check if no transactions were found and debug info is available
+      if (data.transactions?.length === 0 && data.debug) {
+        setUploadStatus('error')
+        setMessage(data.message || 'No transactions found')
+        setDebugInfo(data.debug)
+      } else {
+        setUploadStatus('success')
+        setMessage(data.message || 'File uploaded successfully')
+      }
       onUploadComplete()
     } catch {
       setUploadStatus('error')
@@ -113,16 +147,59 @@ export function FileUploader({ onUploadComplete }: FileUploaderProps) {
       {uploadStatus !== 'idle' && (
         <div
           className={cn(
-            "flex items-center gap-3 rounded-lg p-4",
+            "rounded-lg p-4",
             uploadStatus === 'success' ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
           )}
         >
-          {uploadStatus === 'success' ? (
-            <CheckCircle className="h-5 w-5 flex-shrink-0" />
-          ) : (
-            <XCircle className="h-5 w-5 flex-shrink-0" />
+          <div className="flex items-center gap-3">
+            {uploadStatus === 'success' ? (
+              <CheckCircle className="h-5 w-5 flex-shrink-0" />
+            ) : (
+              <XCircle className="h-5 w-5 flex-shrink-0" />
+            )}
+            <p className="text-sm">{message}</p>
+          </div>
+
+          {debugInfo && (
+            <div className="mt-3">
+              <button
+                onClick={() => setShowDebug(!showDebug)}
+                className="flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-800"
+              >
+                {showDebug ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                {showDebug ? 'Hide' : 'Show'} Debug Info
+              </button>
+
+              {showDebug && (
+                <div className="mt-2 p-3 bg-white rounded border border-red-200 text-xs font-mono overflow-auto max-h-64">
+                  <div className="space-y-2">
+                    <div>
+                      <strong>Rows found:</strong> {debugInfo.rowCount}
+                    </div>
+                    <div>
+                      <strong>Headers:</strong> {JSON.stringify(debugInfo.headers)}
+                    </div>
+                    <div>
+                      <strong>Column mapping:</strong>
+                      <pre className="mt-1 text-gray-600">{JSON.stringify(debugInfo.columnMapping, null, 2)}</pre>
+                    </div>
+                    {debugInfo.sampleRows.length > 0 && (
+                      <div>
+                        <strong>Sample rows (raw → parsed):</strong>
+                        <pre className="mt-1 text-gray-600">{JSON.stringify(debugInfo.sampleRows, null, 2)}</pre>
+                      </div>
+                    )}
+                    {debugInfo.skippedRows.length > 0 && (
+                      <div>
+                        <strong>Skipped rows:</strong>
+                        <pre className="mt-1 text-gray-600">{JSON.stringify(debugInfo.skippedRows, null, 2)}</pre>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
-          <p className="text-sm">{message}</p>
         </div>
       )}
     </div>
