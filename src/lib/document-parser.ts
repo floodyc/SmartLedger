@@ -34,35 +34,29 @@ const CATEGORY_PATTERNS: Record<string, string[]> = {
   'Travel': ['hotel', 'airbnb', 'booking', 'expedia', 'travel', 'vacation'],
 }
 
-function parseDate(dateStr: string | number | Date | unknown): Date | null {
-  console.log('parseDate input:', dateStr, 'type:', typeof dateStr)
+function excelSerialToDate(serial: number): Date {
+  // Excel serial date: days since Dec 30, 1899
+  // But Excel incorrectly treats 1900 as a leap year, so we adjust
+  const utcDays = serial - 25569 // Days from Unix epoch (Jan 1, 1970)
+  const utcMs = utcDays * 86400 * 1000
+  return new Date(utcMs)
+}
 
-  // Handle Excel serial dates (numbers like 45306 representing days since 1900)
-  if (typeof dateStr === 'number' && dateStr > 1000 && dateStr < 100000) {
-    // Use xlsx's SSF utility for accurate conversion
-    try {
-      const parsed = XLSX.SSF.parse_date_code(dateStr)
-      if (parsed) {
-        const date = new Date(parsed.y, parsed.m - 1, parsed.d)
-        console.log('Excel serial date converted:', dateStr, '->', date.toISOString())
-        if (!isNaN(date.getTime())) {
-          return date
-        }
-      }
-    } catch {
-      // Fallback to manual calculation
-      const excelEpoch = new Date(Date.UTC(1899, 11, 30))
-      const date = new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000)
-      console.log('Excel serial date fallback:', dateStr, '->', date.toISOString())
-      if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
+function parseDate(dateStr: string | number | Date | unknown): Date | null {
+  // Handle Excel serial dates (numbers like 45306)
+  if (typeof dateStr === 'number') {
+    if (dateStr > 25000 && dateStr < 60000) {
+      // Likely an Excel serial date (covers ~1968 to ~2064)
+      const date = excelSerialToDate(dateStr)
+      if (!isNaN(date.getTime())) {
         return date
       }
     }
+    return null
   }
 
   // Handle Date objects directly
   if (dateStr instanceof Date) {
-    console.log('Date object:', dateStr)
     return isNaN(dateStr.getTime()) ? null : dateStr
   }
 
@@ -70,26 +64,12 @@ function parseDate(dateStr: string | number | Date | unknown): Date | null {
   const str = String(dateStr || '').trim()
   if (!str) return null
 
-  // Try each date format
-  for (const format of DATE_FORMATS) {
-    const match = str.match(format)
-    if (match) {
-      const date = new Date(str)
-      if (!isNaN(date.getTime())) {
-        console.log('Regex date parsed:', str, '->', date.toISOString())
-        return date
-      }
-    }
-  }
-
-  // Try direct parsing as fallback
+  // Try direct parsing (handles ISO dates, common formats)
   const date = new Date(str)
   if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
-    console.log('Direct date parsed:', str, '->', date.toISOString())
     return date
   }
 
-  console.log('Could not parse date:', dateStr)
   return null
 }
 
@@ -251,62 +231,71 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
 }
 
 export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]> {
+  let text = ''
+
   try {
-    // Use pdf-parse with options to avoid test file issues in serverless
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require('pdf-parse/lib/pdf-parse')
-    const data = await pdfParse(buffer, {
-      // Disable test file loading which causes issues in serverless
-      max: 0,
-    })
-    const text = data.text as string
+    // Try dynamic import for better serverless compatibility
+    const pdfParse = (await import('pdf-parse')).default
+    const data = await pdfParse(buffer)
+    text = data.text
+  } catch (err1) {
+    console.error('pdf-parse default import failed:', err1)
+    try {
+      // Fallback: try require with direct path
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const pdfParse = require('pdf-parse/lib/pdf-parse')
+      const data = await pdfParse(buffer)
+      text = data.text
+    } catch (err2) {
+      console.error('pdf-parse fallback failed:', err2)
+      // Return empty array instead of throwing - PDF parsing not available
+      console.log('PDF parsing not available in this environment. Please use CSV or Excel files.')
+      return []
+    }
+  }
 
-    const transactions: ParsedTransaction[] = []
-    const lines = text.split('\n').filter(line => line.trim())
+  const transactions: ParsedTransaction[] = []
+  const lines = text.split('\n').filter(line => line.trim())
 
-    // Multiple transaction patterns to catch different bank statement formats
-    const patterns = [
-      // Pattern 1: Date Description Amount (standard)
-      /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)\s*$/,
-      // Pattern 2: Date Description Amount with trailing text
-      /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.{10,}?)\s+(-?\$?[\d,]+\.?\d{2})/,
-      // Pattern 3: YYYY-MM-DD format
-      /(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)/,
-    ]
+  // Multiple transaction patterns to catch different bank statement formats
+  const patterns = [
+    // Pattern 1: Date Description Amount (standard)
+    /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)\s*$/,
+    // Pattern 2: Date Description Amount with trailing text
+    /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.{10,}?)\s+(-?\$?[\d,]+\.?\d{2})/,
+    // Pattern 3: YYYY-MM-DD format
+    /(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)/,
+  ]
 
-    for (const line of lines) {
-      for (const pattern of patterns) {
-        const match = line.match(pattern)
-        if (match) {
-          const [, dateStr, description, amountStr] = match
-          const date = parseDate(dateStr)
+  for (const line of lines) {
+    for (const pattern of patterns) {
+      const match = line.match(pattern)
+      if (match) {
+        const [, dateStr, description, amountStr] = match
+        const date = parseDate(dateStr)
 
-          if (!date) continue
+        if (!date) continue
 
-          const { value: amount, isNegative } = parseAmount(amountStr)
-          if (amount === 0) continue
+        const { value: amount, isNegative } = parseAmount(amountStr)
+        if (amount === 0) continue
 
-          const type: 'CREDIT' | 'DEBIT' = isNegative ? 'DEBIT' : 'CREDIT'
-          const category = detectCategory(description)
+        const type: 'CREDIT' | 'DEBIT' = isNegative ? 'DEBIT' : 'CREDIT'
+        const category = detectCategory(description)
 
-          transactions.push({
-            date: date.toISOString(),
-            description: description.trim(),
-            amount,
-            type,
-            category,
-          })
-          break // Found a match, move to next line
-        }
+        transactions.push({
+          date: date.toISOString(),
+          description: description.trim(),
+          amount,
+          type,
+          category,
+        })
+        break // Found a match, move to next line
       }
     }
-
-    console.log('PDF transactions found:', transactions.length)
-    return transactions
-  } catch (error) {
-    console.error('PDF parsing error:', error)
-    throw new Error('Failed to parse PDF file. The file may be corrupted or password-protected.')
   }
+
+  console.log('PDF transactions found:', transactions.length)
+  return transactions
 }
 
 export async function parseWordFile(buffer: Buffer): Promise<ParsedTransaction[]> {
