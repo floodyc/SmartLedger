@@ -467,13 +467,15 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   let pdfError: string | null = null
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require('pdf-parse')
-    const data = await pdfParse(buffer)
-    text = data.text || ''
-    console.log('PDF text extracted, length:', text.length)
+    // Use unpdf which is designed for serverless environments
+    const { extractText, getDocumentProxy } = await import('unpdf')
+    const uint8Array = new Uint8Array(buffer)
+    const pdf = await getDocumentProxy(uint8Array)
+    const { text: extractedText } = await extractText(pdf, { mergePages: true })
+    text = extractedText || ''
+    console.log('PDF text extracted with unpdf, length:', text.length)
   } catch (err) {
-    console.error('pdf-parse failed:', err)
+    console.error('unpdf failed:', err)
     pdfError = err instanceof Error ? err.message : String(err)
   }
 
@@ -482,7 +484,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     return {
       transactions: [],
       debug: {
-        parserVersion: 'pdf-v2-parse-failed',
+        parserVersion: 'pdf-v3-unpdf-failed',
         rowCount: 0,
         headers: ['PDF parsing failed'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
@@ -619,7 +621,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     return {
       transactions: [],
       debug: {
-        parserVersion: 'pdf-v2-no-transactions',
+        parserVersion: 'pdf-v3-unpdf-no-transactions',
         rowCount: lines.length,
         headers: ['PDF text extracted but no transactions matched'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
@@ -642,7 +644,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   return {
     transactions,
     debug: {
-      parserVersion: 'pdf-v2-success',
+      parserVersion: 'pdf-v3-unpdf-success',
       rowCount: lines.length,
       headers: ['PDF parsed successfully'],
       columnMapping: { dateCol: 'auto', descCol: 'auto', amountCol: 'auto', typeCol: null },
