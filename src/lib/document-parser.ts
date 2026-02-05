@@ -579,6 +579,23 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
 
   // Check if we got very little text
   if (lines.length < 5) {
+    // If we have few lines but lots of content, the text might be merged
+    // Try to split on transaction patterns (e.g., RBC statements)
+    const fullText = lines.join(' ')
+    if (fullText.length > 500) {
+      // RBC format: "MMM DD MMM DD description $amount" - split before month names followed by numbers
+      const splitPattern = /(?=(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s)/gi
+      const splitLines = fullText.split(splitPattern).filter(l => l.trim().length > 10)
+      if (splitLines.length > 5) {
+        console.log('Re-split merged text into', splitLines.length, 'potential transaction lines')
+        lines = splitLines
+        parserUsed = parserUsed + '-resplit'
+      }
+    }
+  }
+
+  // If still too few lines, return error
+  if (lines.length < 5) {
     return {
       transactions: [],
       debug: {
@@ -588,7 +605,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
         sampleRows: [],
         skippedRows: [{
-          reason: `Only ${lines.length} lines extracted. This PDF may use a complex layout or be image-based. Please try: 1) Download as CSV from your bank's website, 2) Copy transactions to a spreadsheet. Sample: ${lines.slice(0, 3).join(' | ')}`,
+          reason: `Only ${lines.length} lines extracted. This PDF may use a complex layout or be image-based. Please try: 1) Download as CSV from your bank's website, 2) Copy transactions to a spreadsheet. Sample: ${lines.slice(0, 3).join(' | ').substring(0, 200)}`,
           rawDate: null,
           rawAmount: null
         }]
@@ -599,8 +616,25 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   const transactions: ParsedTransaction[] = []
   const skippedSamples: Array<{ line: string; reason: string }> = []
 
+  // Current year for date parsing (statements usually don't include year for each transaction)
+  const currentYear = new Date().getFullYear()
+
   // Extensive transaction patterns for different bank statement formats
   const patterns = [
+    // RBC Canadian format: "DEC 10 DEC 15 SAFEWAY # 4977 COQUITLAM BC ... $130.96"
+    // Transaction date, posting date, description, amount
+    {
+      regex: /^([A-Z]{3}\s+\d{1,2})\s+[A-Z]{3}\s+\d{1,2}\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/i,
+      name: 'rbc-canadian',
+      monthName: true
+    },
+    // RBC with negative (refund): same pattern but captures negative
+    {
+      regex: /^([A-Z]{3}\s+\d{1,2})\s+[A-Z]{3}\s+\d{1,2}\s+(.+?)\s+(-\$?[\d,]+\.\d{2})\s*$/i,
+      name: 'rbc-canadian-refund',
+      monthName: true
+    },
+
     // Standard US formats: MM/DD/YYYY or MM/DD/YY
     { regex: /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/, name: 'us-standard' },
     { regex: /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{5,}?)\s+(-?\$?[\d,]+\.\d{2})/, name: 'us-mid-desc' },
@@ -630,10 +664,31 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     { regex: /^([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})/, name: 'month-name' },
   ]
 
+  // Helper to parse month name dates like "DEC 10"
+  const monthMap: Record<string, number> = {
+    'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
+    'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
+  }
+
+  function parseMonthNameDate(dateStr: string): Date | null {
+    const match = dateStr.toUpperCase().match(/([A-Z]{3})\s+(\d{1,2})/)
+    if (!match) return null
+    const [, month, day] = match
+    const monthNum = monthMap[month]
+    if (monthNum === undefined) return null
+    // Assume current year, but if month is ahead of current month, use previous year
+    let year = currentYear
+    const currentMonth = new Date().getMonth()
+    if (monthNum > currentMonth + 1) {
+      year = currentYear - 1
+    }
+    return new Date(year, monthNum, parseInt(day))
+  }
+
   for (const line of lines) {
     let matched = false
 
-    for (const { regex, name, amountFirst, hasBothCols } of patterns) {
+    for (const { regex, name, amountFirst, hasBothCols, monthName } of patterns) {
       const match = line.match(regex)
       if (match) {
         let dateStr: string, description: string, amountStr: string
@@ -656,7 +711,8 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
           [, dateStr, description, amountStr] = match
         }
 
-        const date = parseDate(dateStr)
+        // Parse date - use month name parser for RBC format
+        const date = monthName ? parseMonthNameDate(dateStr) : parseDate(dateStr)
         if (!date) {
           if (skippedSamples.length < 5) {
             skippedSamples.push({ line: line.substring(0, 60), reason: `Pattern ${name} matched but date invalid: ${dateStr}` })
