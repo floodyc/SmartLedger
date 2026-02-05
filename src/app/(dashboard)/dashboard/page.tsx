@@ -8,6 +8,8 @@ import { FileUploader } from '@/components/dashboard/file-uploader'
 import { StatsCards } from '@/components/dashboard/stats-cards'
 import { AnalysisButtons } from '@/components/dashboard/analysis-buttons'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
+import { FamilyMembers } from '@/components/dashboard/family-members'
+import { ExportData } from '@/components/dashboard/export-data'
 import {
   CashFlowView,
   SpendingCategoriesView,
@@ -197,7 +199,7 @@ export default function DashboardPage() {
           {/* Analysis View */}
           {renderAnalysisView()}
 
-          {/* Two Column Layout */}
+          {/* Two Column Layout - Upload and Transactions */}
           <div className="grid lg:grid-cols-2 gap-8">
             {/* Upload Section */}
             <div>
@@ -207,6 +209,15 @@ export default function DashboardPage() {
 
             {/* Recent Transactions */}
             <RecentTransactions transactions={transactions} loading={loading} />
+          </div>
+
+          {/* Two Column Layout - Family and Export */}
+          <div className="grid lg:grid-cols-2 gap-8">
+            {/* Family Members */}
+            <FamilyMembers onUpdate={fetchDashboardData} />
+
+            {/* Export Data */}
+            <ExportData />
           </div>
         </div>
       </main>
