@@ -190,41 +190,68 @@ function parseCSVManually(text: string): Record<string, unknown>[] {
 
 export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
   // Version marker - check debug.parserVersion to confirm deployment
-  const PARSER_VERSION = 'v2-csv-fix'
+  const PARSER_VERSION = 'v3-xlsx-fix'
 
-  // Try parsing with XLSX first
+  // Check if this is a text file (CSV) or binary file (XLSX/XLS)
+  // XLSX/ZIP files start with "PK" (0x50 0x4B)
+  const isBinaryFile = buffer[0] === 0x50 && buffer[1] === 0x4B
+
+  console.log('=== XLSX PARSE DEBUG ===', PARSER_VERSION)
+  console.log('File type:', isBinaryFile ? 'binary (XLSX)' : 'text (CSV)')
+  console.log('First bytes:', buffer.slice(0, 10).toString('hex'))
+
+  // For text files (CSV), parse manually for reliability
+  if (!isBinaryFile) {
+    console.log('Parsing as CSV text file...')
+    const text = buffer.toString('utf-8')
+    const data = parseCSVManually(text)
+    console.log('CSV parse result - rows:', data.length)
+    if (data.length > 0) {
+      console.log('CSV headers:', Object.keys(data[0]))
+    }
+
+    if (data.length === 0) {
+      return {
+        transactions: [],
+        debug: {
+          parserVersion: PARSER_VERSION,
+          rowCount: 0,
+          headers: [],
+          columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+          sampleRows: [],
+          skippedRows: [{ reason: 'No data rows in CSV file', rawDate: null, rawAmount: null }]
+        }
+      }
+    }
+
+    // Continue with the parsed CSV data
+    return processData(data, PARSER_VERSION)
+  }
+
+  // For binary files (XLSX), use the XLSX library
+  console.log('Parsing as XLSX binary file...')
   const workbook = XLSX.read(buffer, { type: 'buffer' })
   const sheetName = workbook.SheetNames[0]
   const worksheet = workbook.Sheets[sheetName]
-  let data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
+  const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
-  console.log('=== XLSX PARSE DEBUG ===', PARSER_VERSION)
   console.log('Sheet names:', workbook.SheetNames)
   console.log('Data rows:', data.length)
-  console.log('First row raw:', JSON.stringify(data[0]))
-
-  // Check if CSV wasn't parsed correctly (single column containing commas)
   if (data.length > 0) {
-    const initialHeaders = Object.keys(data[0])
-    if (initialHeaders.length === 1 && initialHeaders[0].includes(',')) {
-      console.log('CSV delimiter not detected, parsing manually...')
-      // Convert buffer to string and parse manually
-      const text = buffer.toString('utf-8')
-      data = parseCSVManually(text)
-      console.log('Manual parse result - rows:', data.length)
-      if (data.length > 0) {
-        console.log('Manual parse headers:', Object.keys(data[0]))
-        console.log('Manual parse first row:', JSON.stringify(data[0]))
-      }
-    }
+    console.log('First row keys:', Object.keys(data[0]))
+    console.log('First row raw:', JSON.stringify(data[0]).substring(0, 200))
   }
 
+  return processData(data, PARSER_VERSION)
+}
+
+function processData(data: Record<string, unknown>[], parserVersion: string): ParseResult {
   if (data.length === 0) {
     console.log('No data rows found!')
     return {
       transactions: [],
       debug: {
-        parserVersion: PARSER_VERSION,
+        parserVersion,
         rowCount: 0,
         headers: [],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
@@ -323,7 +350,7 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
   return {
     transactions,
     debug: {
-      parserVersion: PARSER_VERSION,
+      parserVersion,
       rowCount: data.length,
       headers,
       columnMapping: { dateCol, descCol, amountCol, typeCol },
