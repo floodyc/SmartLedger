@@ -34,13 +34,31 @@ const CATEGORY_PATTERNS: Record<string, string[]> = {
   'Travel': ['hotel', 'airbnb', 'booking', 'expedia', 'travel', 'vacation'],
 }
 
-function parseDate(dateStr: string): Date | null {
+function parseDate(dateStr: string | number | Date | unknown): Date | null {
+  // Handle Excel serial dates (numbers like 45302 representing days since 1900)
+  if (typeof dateStr === 'number') {
+    // Excel serial date conversion
+    const excelEpoch = new Date(1899, 11, 30) // Excel epoch is Dec 30, 1899
+    const date = new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000)
+    if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
+      return date
+    }
+  }
+
+  // Handle Date objects directly
+  if (dateStr instanceof Date) {
+    return isNaN(dateStr.getTime()) ? null : dateStr
+  }
+
+  // Convert to string for pattern matching
+  const str = String(dateStr || '').trim()
+  if (!str) return null
+
   // Try each date format
   for (const format of DATE_FORMATS) {
-    const match = dateStr.match(format)
+    const match = str.match(format)
     if (match) {
-      // Try to create a valid date
-      const date = new Date(dateStr)
+      const date = new Date(str)
       if (!isNaN(date.getTime())) {
         return date
       }
@@ -48,25 +66,35 @@ function parseDate(dateStr: string): Date | null {
   }
 
   // Try direct parsing as fallback
-  const date = new Date(dateStr)
-  if (!isNaN(date.getTime())) {
+  const date = new Date(str)
+  if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
     return date
   }
 
   return null
 }
 
-function parseAmount(amountStr: string): number {
-  if (typeof amountStr === 'number') return Math.abs(amountStr)
+function parseAmount(amountStr: string | number | unknown): { value: number; isNegative: boolean } {
+  // Handle numbers directly
+  if (typeof amountStr === 'number') {
+    return { value: Math.abs(amountStr), isNegative: amountStr < 0 }
+  }
 
-  // Remove currency symbols and commas
-  const cleaned = amountStr
-    .replace(/[$€£¥,]/g, '')
+  const str = String(amountStr || '').trim()
+  if (!str) return { value: 0, isNegative: false }
+
+  // Check for negative indicators
+  const isNegative = str.startsWith('-') || str.startsWith('(') || str.endsWith('-')
+
+  // Remove currency symbols, commas, parentheses
+  const cleaned = str
+    .replace(/[$€£¥,()]/g, '')
     .replace(/\s/g, '')
+    .replace(/-$/g, '') // Remove trailing minus
     .trim()
 
   const amount = parseFloat(cleaned)
-  return isNaN(amount) ? 0 : Math.abs(amount)
+  return { value: isNaN(amount) ? 0 : Math.abs(amount), isNegative }
 }
 
 function detectTransactionType(row: Record<string, unknown>, amount: number): 'CREDIT' | 'DEBIT' {
@@ -123,35 +151,60 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
   const worksheet = workbook.Sheets[sheetName]
   const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
+  console.log('Parsed Excel/CSV data rows:', data.length)
   if (data.length === 0) return []
 
   const headers = Object.keys(data[0])
+  console.log('Headers found:', headers)
 
-  // Find relevant columns
-  const dateCol = findColumn(headers, ['date', 'transaction date', 'posted', 'posting date'])
-  const descCol = findColumn(headers, ['description', 'desc', 'memo', 'merchant', 'payee', 'details', 'narrative'])
-  const amountCol = findColumn(headers, ['amount', 'value', 'sum', 'total', 'debit', 'credit'])
-  const typeCol = findColumn(headers, ['type', 'transaction type', 'dr/cr', 'debit/credit'])
+  // Find relevant columns - expanded search terms
+  const dateCol = findColumn(headers, ['date', 'transaction date', 'posted', 'posting date', 'trans date', 'value date'])
+  const descCol = findColumn(headers, ['description', 'desc', 'memo', 'merchant', 'payee', 'details', 'narrative', 'name', 'transaction'])
+  const amountCol = findColumn(headers, ['amount', 'value', 'sum', 'total', 'debit', 'credit', 'money', 'price'])
+  const typeCol = findColumn(headers, ['type', 'transaction type', 'dr/cr', 'debit/credit', 'in/out'])
+
+  console.log('Column mapping:', { dateCol, descCol, amountCol, typeCol })
+
+  // If we can't find standard columns, try to use first columns (Date, Desc, Amount pattern is common)
+  const fallbackDateCol = dateCol || headers[0]
+  const fallbackDescCol = descCol || headers[1]
+  const fallbackAmountCol = amountCol || headers[2]
 
   const transactions: ParsedTransaction[] = []
 
   for (const row of data) {
-    const dateStr = String(row[dateCol || ''] || '')
-    const date = parseDate(dateStr)
+    // Try mapped columns first, then fallbacks
+    const rawDate = row[dateCol || ''] ?? row[fallbackDateCol]
+    const date = parseDate(rawDate)
 
-    if (!date) continue
+    if (!date) {
+      console.log('Could not parse date from:', rawDate)
+      continue
+    }
 
-    const description = String(row[descCol || ''] || 'Unknown transaction')
-    const amount = parseAmount(String(row[amountCol || ''] || '0'))
+    const description = String(row[descCol || ''] ?? row[fallbackDescCol] ?? 'Unknown transaction')
+    const rawAmount = row[amountCol || ''] ?? row[fallbackAmountCol]
+    const { value: amount, isNegative } = parseAmount(rawAmount)
 
-    if (amount === 0) continue
+    if (amount === 0) {
+      console.log('Amount is 0, skipping:', rawAmount)
+      continue
+    }
 
     let type: 'CREDIT' | 'DEBIT'
     if (typeCol && row[typeCol]) {
       const typeStr = String(row[typeCol]).toLowerCase()
       type = CREDIT_KEYWORDS.some(k => typeStr.includes(k)) ? 'CREDIT' : 'DEBIT'
+    } else if (isNegative) {
+      type = 'DEBIT'
     } else {
-      type = detectTransactionType(row, amount)
+      // Check description for keywords
+      const descLower = description.toLowerCase()
+      if (CREDIT_KEYWORDS.some(k => descLower.includes(k))) {
+        type = 'CREDIT'
+      } else {
+        type = 'DEBIT'
+      }
     }
 
     const category = detectCategory(description)
@@ -165,6 +218,7 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
     })
   }
 
+  console.log('Parsed transactions:', transactions.length)
   return transactions
 }
 
@@ -201,10 +255,10 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]>
 
           if (!date) continue
 
-          const amount = parseAmount(amountStr)
+          const { value: amount, isNegative } = parseAmount(amountStr)
           if (amount === 0) continue
 
-          const type: 'CREDIT' | 'DEBIT' = amountStr.includes('-') ? 'DEBIT' : 'CREDIT'
+          const type: 'CREDIT' | 'DEBIT' = isNegative ? 'DEBIT' : 'CREDIT'
           const category = detectCategory(description)
 
           transactions.push({
@@ -219,6 +273,7 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]>
       }
     }
 
+    console.log('PDF transactions found:', transactions.length)
     return transactions
   } catch (error) {
     console.error('PDF parsing error:', error)
@@ -245,10 +300,10 @@ export async function parseWordFile(buffer: Buffer): Promise<ParsedTransaction[]
 
       if (!date) continue
 
-      const amount = parseAmount(amountStr)
+      const { value: amount, isNegative } = parseAmount(amountStr)
       if (amount === 0) continue
 
-      const type: 'CREDIT' | 'DEBIT' = amountStr.includes('-') ? 'DEBIT' : 'CREDIT'
+      const type: 'CREDIT' | 'DEBIT' = isNegative ? 'DEBIT' : 'CREDIT'
       const category = detectCategory(description)
 
       transactions.push({
