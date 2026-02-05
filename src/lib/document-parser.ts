@@ -144,61 +144,54 @@ function findColumn(headers: string[], possibilities: string[]): string | null {
   return null
 }
 
-// Parse CSV text manually when XLSX fails to detect delimiter
-function parseCSVManually(text: string): Record<string, unknown>[] {
-  console.log('parseCSVManually called')
-  console.log('Text length:', text.length)
-  console.log('Text preview (first 100 chars):', JSON.stringify(text.substring(0, 100)))
-  console.log('Text char codes (first 20):', Array.from(text.substring(0, 20)).map(c => c.charCodeAt(0)))
-
-  const lines = text.split(/\r?\n/).filter(line => line.trim())
-  console.log('Lines count:', lines.length)
-  console.log('First line:', JSON.stringify(lines[0]))
-  console.log('First line char codes:', lines[0] ? Array.from(lines[0]).map(c => c.charCodeAt(0)) : [])
-
-  if (lines.length < 2) return []
-
-  // Parse header line - handle quoted fields
-  const parseCSVLine = (line: string): string[] => {
-    const result: string[] = []
-    let current = ''
-    let inQuotes = false
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i]
-      if (char === '"') {
-        inQuotes = !inQuotes
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim())
-        current = ''
-      } else {
-        current += char
-      }
-    }
-    result.push(current.trim())
-    return result
+// Parse CSV text manually - simple approach with debug info
+interface CSVParseResult {
+  data: Record<string, unknown>[]
+  debug: {
+    charCodes: number[]
+    textPreview: string
+    linesCount: number
+    headersFromSplit: string[]
   }
+}
 
-  const headers = parseCSVLine(lines[0])
-  console.log('Parsed headers:', headers)
-  console.log('Headers count:', headers.length)
+function parseCSVManually(text: string): CSVParseResult {
+  const lines = text.split(/\r?\n/).filter(line => line.trim())
+  const firstLine = lines[0] || ''
+
+  // Collect debug info - char codes help identify encoding issues
+  const charCodes = Array.from(firstLine.substring(0, 50)).map(c => c.charCodeAt(0))
+  const textPreview = text.substring(0, 150).replace(/\n/g, '\\n')
+
+  // Simple split on comma
+  const headersFromSplit = firstLine.split(',').map(h => h.trim())
+
+  if (lines.length < 2) {
+    return {
+      data: [],
+      debug: { charCodes, textPreview, linesCount: lines.length, headersFromSplit }
+    }
+  }
 
   const data: Record<string, unknown>[] = []
 
   for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i])
+    const values = lines[i].split(',').map(v => v.trim())
     const row: Record<string, unknown> = {}
-    headers.forEach((header, index) => {
-      // Try to parse numbers
+    headersFromSplit.forEach((header, index) => {
       const value = values[index] ?? ''
-      const numValue = parseFloat(value.replace(/[,$]/g, ''))
-      row[header] = !isNaN(numValue) && value.match(/^-?[$]?[\d,]+\.?\d*$/) ? numValue : value
+      // Try to parse as number
+      const cleanValue = value.replace(/[$]/g, '')
+      const numValue = parseFloat(cleanValue)
+      row[header] = !isNaN(numValue) && cleanValue.match(/^-?[\d.]+$/) ? numValue : value
     })
     data.push(row)
   }
 
-  console.log('parseCSVManually returning', data.length, 'rows')
-  return data
+  return {
+    data,
+    debug: { charCodes, textPreview, linesCount: lines.length, headersFromSplit }
+  }
 }
 
 export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
@@ -218,24 +211,26 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
     console.log('Parsing as CSV text file...')
     const text = buffer.toString('utf-8')
 
-    // Debug: Check actual text content
-    const textPreview = text.substring(0, 200)
-    const firstLineChars = text.split(/\r?\n/)[0]?.split('').map(c => c.charCodeAt(0)).slice(0, 30) || []
-
-    const data = parseCSVManually(text)
+    const csvResult = parseCSVManually(text)
+    const { data, debug: csvDebug } = csvResult
     console.log('CSV parse result - rows:', data.length)
+    console.log('CSV debug - headers from split:', csvDebug.headersFromSplit)
+    console.log('CSV debug - char codes:', csvDebug.charCodes)
+
+    // Include CSV debug info in version string so it shows in UI
+    const debugVersion = `v4-simple-split | headers: ${csvDebug.headersFromSplit.length} | chars: [${csvDebug.charCodes.slice(0, 10).join(',')}]`
 
     if (data.length === 0) {
       return {
         transactions: [],
         debug: {
-          parserVersion: PARSER_VERSION + '-csv-path',
+          parserVersion: debugVersion,
           rowCount: 0,
-          headers: [],
+          headers: csvDebug.headersFromSplit,
           columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
           sampleRows: [],
           skippedRows: [{
-            reason: `No data rows. Text preview: ${textPreview}. First line char codes: ${firstLineChars.join(',')}`,
+            reason: `No data rows. Preview: ${csvDebug.textPreview}`,
             rawDate: null,
             rawAmount: null
           }]
@@ -243,8 +238,7 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
       }
     }
 
-    // Add marker to version to confirm CSV path was taken
-    return processData(data, PARSER_VERSION + '-csv-path', textPreview, firstLineChars)
+    return processData(data, debugVersion)
   }
 
   // For binary files (XLSX), use the XLSX library
@@ -264,7 +258,7 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
   return processData(data, PARSER_VERSION + '-xlsx-path')
 }
 
-function processData(data: Record<string, unknown>[], parserVersion: string, textPreview?: string, charCodes?: number[]): ParseResult {
+function processData(data: Record<string, unknown>[], parserVersion: string): ParseResult {
   if (data.length === 0) {
     console.log('No data rows found!')
     return {
