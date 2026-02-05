@@ -234,24 +234,15 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]>
   let text = ''
 
   try {
-    // Try dynamic import for better serverless compatibility
-    const pdfParse = (await import('pdf-parse')).default
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pdfParse = require('pdf-parse')
     const data = await pdfParse(buffer)
     text = data.text
-  } catch (err1) {
-    console.error('pdf-parse default import failed:', err1)
-    try {
-      // Fallback: try require with direct path
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pdfParse = require('pdf-parse/lib/pdf-parse')
-      const data = await pdfParse(buffer)
-      text = data.text
-    } catch (err2) {
-      console.error('pdf-parse fallback failed:', err2)
-      // Return empty array instead of throwing - PDF parsing not available
-      console.log('PDF parsing not available in this environment. Please use CSV or Excel files.')
-      return []
-    }
+  } catch (err) {
+    console.error('pdf-parse failed:', err)
+    // Return empty array instead of throwing - PDF parsing may not work in serverless
+    console.log('PDF parsing failed. Please use CSV or Excel files instead.')
+    return []
   }
 
   const transactions: ParsedTransaction[] = []
