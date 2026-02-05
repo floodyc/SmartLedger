@@ -99,6 +99,7 @@ export interface DashboardStats {
   transactionCount: number
   topCategory: string
   topCategoryAmount: number
+  spendingByCategory?: Record<string, number>
 }
 
 export interface CategoryBreakdown {

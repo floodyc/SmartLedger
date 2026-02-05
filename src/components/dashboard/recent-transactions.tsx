@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from 'react'
-import { ArrowUpRight, ArrowDownRight, Trash2, Loader2 } from 'lucide-react'
+import { ArrowUpRight, ArrowDownRight, Trash2, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { formatCurrency, formatDateShort, getColorForCategory } from '@/lib/utils'
@@ -15,6 +15,7 @@ interface RecentTransactionsProps {
 
 export function RecentTransactions({ transactions, loading, onDelete }: RecentTransactionsProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this transaction?')) return
@@ -76,14 +77,18 @@ export function RecentTransactions({ transactions, loading, onDelete }: RecentTr
     )
   }
 
+  const displayedTransactions = showAll ? transactions : transactions.slice(0, 10)
+  const hasMore = transactions.length > 10
+
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Recent Transactions</CardTitle>
+        <span className="text-sm text-gray-500">{transactions.length} total</span>
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
-          {transactions.slice(0, 10).map((transaction) => (
+          {displayedTransactions.map((transaction) => (
             <div key={transaction.id} className="flex items-center gap-4">
               <div
                 className={`flex h-10 w-10 items-center justify-center rounded-full ${
@@ -141,6 +146,26 @@ export function RecentTransactions({ transactions, loading, onDelete }: RecentTr
             </div>
           ))}
         </div>
+
+        {hasMore && (
+          <Button
+            variant="ghost"
+            className="w-full mt-4 text-gray-500 hover:text-gray-700"
+            onClick={() => setShowAll(!showAll)}
+          >
+            {showAll ? (
+              <>
+                <ChevronUp className="h-4 w-4 mr-2" />
+                Show Less
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-4 w-4 mr-2" />
+                Show All ({transactions.length - 10} more)
+              </>
+            )}
+          </Button>
+        )}
       </CardContent>
     </Card>
   )

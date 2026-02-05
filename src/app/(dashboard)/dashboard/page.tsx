@@ -8,6 +8,8 @@ import { FileUploader } from '@/components/dashboard/file-uploader'
 import { StatsCards } from '@/components/dashboard/stats-cards'
 import { AnalysisButtons } from '@/components/dashboard/analysis-buttons'
 import { RecentTransactions } from '@/components/dashboard/recent-transactions'
+import { BudgetManager } from '@/components/dashboard/budget-manager'
+import { SavingsGoals } from '@/components/dashboard/savings-goals'
 import { FamilyMembers } from '@/components/dashboard/family-members'
 import { ExportData } from '@/components/dashboard/export-data'
 import {
@@ -219,6 +221,15 @@ export default function DashboardPage() {
                   .then(data => { if (data.stats) setStats(data.stats) })
               }}
             />
+          </div>
+
+          {/* Two Column Layout - Budgets and Savings Goals */}
+          <div className="grid lg:grid-cols-2 gap-8">
+            {/* Budget Manager */}
+            <BudgetManager spending={stats?.spendingByCategory || {}} />
+
+            {/* Savings Goals */}
+            <SavingsGoals />
           </div>
 
           {/* Two Column Layout - Family and Export */}

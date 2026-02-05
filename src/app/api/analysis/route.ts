@@ -86,6 +86,7 @@ async function getDashboardStats(accountId: string, startDate: Date, endDate: Da
       transactionCount: transactions.length,
       topCategory: topCategory?.[0] || 'None',
       topCategoryAmount: topCategory?.[1] || 0,
+      spendingByCategory: categoryTotals,
     },
   })
 }
