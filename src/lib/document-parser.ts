@@ -589,10 +589,16 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
       const splitPatterns = [
         // RBC Credit Card: "MMM DD MMM DD description $amount"
         { pattern: /(?=(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s)/gi, name: 'rbc-cc' },
-        // RBC Savings/Chequing: "MMM DD description amount" (single date)
+        // RBC Savings/Chequing: "MMM DD description amount" (single date, short month)
         { pattern: /(?=(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+\d{1,2}\s+[A-Z])/gi, name: 'rbc-bank' },
+        // Full month names: "December 09" or "January 10" followed by text
+        { pattern: /(?=(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s)/gi, name: 'full-month' },
         // Numeric dates: "MM/DD" or "DD/MM" followed by text
         { pattern: /(?=\d{1,2}\/\d{1,2}\s+[A-Z])/gi, name: 'numeric-date' },
+        // RBC savings format with balance: split before Opening/Closing Balance or transaction types
+        { pattern: /(?=(?:Opening|Closing)\s+Balance)/gi, name: 'rbc-balance' },
+        // Split before common transaction descriptions
+        { pattern: /(?=(?:INTERAC|DEPOSIT|WITHDRAWAL|TRANSFER|PAY(?:MENT|ROLL)|CHEQUE|CHQ|PREAUTHORIZED|PRE-AUTHORIZED|ATM|INTERNET|MOBILE|E-TRANSFER)\s)/gi, name: 'txn-type' },
         // Amount followed by date patterns (split before dollar amounts)
         { pattern: /(?=\$[\d,]+\.\d{2}\s)/g, name: 'amount-split' },
       ]
@@ -658,6 +664,20 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
       monthName: true
     },
 
+    // Full month name format: "December 10 description $amount"
+    {
+      regex: /^((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/i,
+      name: 'full-month',
+      fullMonthName: true
+    },
+
+    // Full month with balance: "December 10 description amount balance"
+    {
+      regex: /^((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s+\$?[\d,]+\.\d{2}\s*$/i,
+      name: 'full-month-balance',
+      fullMonthName: true
+    },
+
     // Standard US formats: MM/DD/YYYY or MM/DD/YY
     { regex: /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/, name: 'us-standard' },
     { regex: /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{5,}?)\s+(-?\$?[\d,]+\.\d{2})/, name: 'us-mid-desc' },
@@ -687,31 +707,48 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     { regex: /^([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})/, name: 'month-name' },
   ]
 
-  // Helper to parse month name dates like "DEC 10"
-  const monthMap: Record<string, number> = {
+  // Helper to parse month name dates like "DEC 10" or "December 10"
+  const monthMapShort: Record<string, number> = {
     'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
     'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
   }
+  const monthMapFull: Record<string, number> = {
+    'JANUARY': 0, 'FEBRUARY': 1, 'MARCH': 2, 'APRIL': 3, 'MAY': 4, 'JUNE': 5,
+    'JULY': 6, 'AUGUST': 7, 'SEPTEMBER': 8, 'OCTOBER': 9, 'NOVEMBER': 10, 'DECEMBER': 11
+  }
 
-  function parseMonthNameDate(dateStr: string): Date | null {
-    const match = dateStr.toUpperCase().match(/([A-Z]{3})\s+(\d{1,2})/)
-    if (!match) return null
-    const [, month, day] = match
-    const monthNum = monthMap[month]
+  function parseMonthNameDate(dateStr: string, fullMonth = false): Date | null {
+    const upper = dateStr.toUpperCase()
+    let monthNum: number | undefined
+    let day: number
+
+    if (fullMonth) {
+      const match = upper.match(/([A-Z]+)\s+(\d{1,2})/)
+      if (!match) return null
+      monthNum = monthMapFull[match[1]]
+      day = parseInt(match[2])
+    } else {
+      const match = upper.match(/([A-Z]{3})\s+(\d{1,2})/)
+      if (!match) return null
+      monthNum = monthMapShort[match[1]]
+      day = parseInt(match[2])
+    }
+
     if (monthNum === undefined) return null
+
     // Assume current year, but if month is ahead of current month, use previous year
     let year = currentYear
     const currentMonth = new Date().getMonth()
     if (monthNum > currentMonth + 1) {
       year = currentYear - 1
     }
-    return new Date(year, monthNum, parseInt(day))
+    return new Date(year, monthNum, day)
   }
 
   for (const line of lines) {
     let matched = false
 
-    for (const { regex, name, amountFirst, hasBothCols, monthName } of patterns) {
+    for (const { regex, name, amountFirst, hasBothCols, monthName, fullMonthName } of patterns) {
       const match = line.match(regex)
       if (match) {
         let dateStr: string, description: string, amountStr: string
@@ -735,7 +772,9 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
         }
 
         // Parse date - use month name parser for RBC format
-        const date = monthName ? parseMonthNameDate(dateStr) : parseDate(dateStr)
+        const date = (monthName || fullMonthName)
+          ? parseMonthNameDate(dateStr, !!fullMonthName)
+          : parseDate(dateStr)
         if (!date) {
           if (skippedSamples.length < 5) {
             skippedSamples.push({ line: line.substring(0, 60), reason: `Pattern ${name} matched but date invalid: ${dateStr}` })
