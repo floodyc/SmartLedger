@@ -299,6 +299,31 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
           }
         }
       }
+
+      // Check if data is in single column with CSV-style content (user typed CSV into column A)
+      if (firstRowKeys.length === 1 && firstKey.includes(',')) {
+        console.log('Detected CSV-style data in single Excel column, re-parsing...')
+
+        // The header row contains comma-separated column names
+        const headers = firstKey.split(',').map(h => h.trim())
+
+        // Parse each row's single-cell value as CSV
+        const reparsedData: Record<string, unknown>[] = []
+        for (const row of data) {
+          const cellValue = String(row[firstKey] || '')
+          const values = cellValue.split(',').map(v => v.trim())
+          const newRow: Record<string, unknown> = {}
+          headers.forEach((header, index) => {
+            const value = values[index] ?? ''
+            const cleanValue = value.replace(/[$]/g, '')
+            const numValue = parseFloat(cleanValue)
+            newRow[header] = !isNaN(numValue) && cleanValue.match(/^-?[\d.]+$/) ? numValue : value
+          })
+          reparsedData.push(newRow)
+        }
+
+        return processData(reparsedData, PARSER_VERSION + `-xlsx-csv-in-column|sheet:${sheetName}`)
+      }
     }
 
     return processData(data, PARSER_VERSION + `-xlsx-ok|sheet:${sheetName}|range:${range}`)
