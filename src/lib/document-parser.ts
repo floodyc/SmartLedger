@@ -189,21 +189,24 @@ function parseCSVManually(text: string): Record<string, unknown>[] {
 }
 
 export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
+  // Version marker - check debug.parserVersion to confirm deployment
+  const PARSER_VERSION = 'v2-csv-fix'
+
   // Try parsing with XLSX first
   const workbook = XLSX.read(buffer, { type: 'buffer' })
   const sheetName = workbook.SheetNames[0]
   const worksheet = workbook.Sheets[sheetName]
   let data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
-  console.log('=== XLSX PARSE DEBUG ===')
+  console.log('=== XLSX PARSE DEBUG ===', PARSER_VERSION)
   console.log('Sheet names:', workbook.SheetNames)
   console.log('Data rows:', data.length)
   console.log('First row raw:', JSON.stringify(data[0]))
 
   // Check if CSV wasn't parsed correctly (single column containing commas)
   if (data.length > 0) {
-    const headers = Object.keys(data[0])
-    if (headers.length === 1 && headers[0].includes(',')) {
+    const initialHeaders = Object.keys(data[0])
+    if (initialHeaders.length === 1 && initialHeaders[0].includes(',')) {
       console.log('CSV delimiter not detected, parsing manually...')
       // Convert buffer to string and parse manually
       const text = buffer.toString('utf-8')
@@ -221,6 +224,7 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
     return {
       transactions: [],
       debug: {
+        parserVersion: PARSER_VERSION,
         rowCount: 0,
         headers: [],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
@@ -319,6 +323,7 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
   return {
     transactions,
     debug: {
+      parserVersion: PARSER_VERSION,
       rowCount: data.length,
       headers,
       columnMapping: { dateCol, descCol, amountCol, typeCol },

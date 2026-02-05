@@ -67,6 +67,7 @@ export interface ParsedTransaction {
 export interface ParseResult {
   transactions: ParsedTransaction[]
   debug?: {
+    parserVersion?: string
     rowCount: number
     headers: string[]
     columnMapping: {

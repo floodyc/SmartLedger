@@ -6,6 +6,7 @@ import { Upload, FileText, CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp
 import { cn } from '@/lib/utils'
 
 interface DebugInfo {
+  parserVersion?: string
   rowCount: number
   headers: string[]
   columnMapping: {
@@ -173,6 +174,11 @@ export function FileUploader({ onUploadComplete }: FileUploaderProps) {
               {showDebug && (
                 <div className="mt-2 p-3 bg-white rounded border border-red-200 text-xs font-mono overflow-auto max-h-64">
                   <div className="space-y-2">
+                    {debugInfo.parserVersion && (
+                      <div>
+                        <strong>Parser version:</strong> {debugInfo.parserVersion}
+                      </div>
+                    )}
                     <div>
                       <strong>Rows found:</strong> {debugInfo.rowCount}
                     </div>
