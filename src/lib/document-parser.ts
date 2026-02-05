@@ -243,19 +243,83 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
 
   // For binary files (XLSX), use the XLSX library
   console.log('Parsing as XLSX binary file...')
-  const workbook = XLSX.read(buffer, { type: 'buffer' })
-  const sheetName = workbook.SheetNames[0]
-  const worksheet = workbook.Sheets[sheetName]
-  const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
-  console.log('Sheet names:', workbook.SheetNames)
-  console.log('Data rows:', data.length)
-  if (data.length > 0) {
-    console.log('First row keys:', Object.keys(data[0]))
-    console.log('First row raw:', JSON.stringify(data[0]).substring(0, 200))
+  try {
+    // Convert buffer to Uint8Array for better compatibility
+    const uint8Array = new Uint8Array(buffer)
+    const workbook = XLSX.read(uint8Array, { type: 'array' })
+
+    console.log('Sheet names:', workbook.SheetNames)
+
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      return {
+        transactions: [],
+        debug: {
+          parserVersion: PARSER_VERSION + '-xlsx-no-sheets',
+          rowCount: 0,
+          headers: [],
+          columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+          sampleRows: [],
+          skippedRows: [{ reason: 'No sheets found in Excel file', rawDate: null, rawAmount: null }]
+        }
+      }
+    }
+
+    const sheetName = workbook.SheetNames[0]
+    const worksheet = workbook.Sheets[sheetName]
+
+    // Get range info for debugging
+    const range = worksheet['!ref'] || 'unknown'
+    console.log('Worksheet range:', range)
+
+    const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
+
+    console.log('Data rows:', data.length)
+    if (data.length > 0) {
+      const firstRowKeys = Object.keys(data[0])
+      console.log('First row keys:', firstRowKeys)
+      console.log('First row sample:', JSON.stringify(data[0]).substring(0, 200))
+
+      // Check if the data looks like binary garbage
+      const firstKey = firstRowKeys[0] || ''
+      if (firstKey.includes('\u0000') || firstKey.includes('PK') || firstKey.length > 100) {
+        return {
+          transactions: [],
+          debug: {
+            parserVersion: PARSER_VERSION + '-xlsx-parse-error',
+            rowCount: data.length,
+            headers: ['Excel parse error - data looks corrupted'],
+            columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+            sampleRows: [],
+            skippedRows: [{
+              reason: `XLSX parsing returned invalid data. Sheet: ${sheetName}, Range: ${range}. Try saving the file as CSV instead.`,
+              rawDate: null,
+              rawAmount: null
+            }]
+          }
+        }
+      }
+    }
+
+    return processData(data, PARSER_VERSION + `-xlsx-ok|sheet:${sheetName}|range:${range}`)
+  } catch (xlsxError) {
+    console.error('XLSX parsing error:', xlsxError)
+    return {
+      transactions: [],
+      debug: {
+        parserVersion: PARSER_VERSION + '-xlsx-exception',
+        rowCount: 0,
+        headers: [],
+        columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+        sampleRows: [],
+        skippedRows: [{
+          reason: `XLSX parsing failed: ${xlsxError instanceof Error ? xlsxError.message : 'Unknown error'}. Try saving as CSV.`,
+          rawDate: null,
+          rawAmount: null
+        }]
+      }
+    }
   }
-
-  return processData(data, PARSER_VERSION + '-xlsx-path')
 }
 
 function processData(data: Record<string, unknown>[], parserVersion: string): ParseResult {
@@ -375,24 +439,36 @@ function processData(data: Record<string, unknown>[], parserVersion: string): Pa
 
 export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   let text = ''
+  let pdfError: string | null = null
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pdfParse = require('pdf-parse')
     const data = await pdfParse(buffer)
-    text = data.text
+    text = data.text || ''
+    console.log('PDF text extracted, length:', text.length)
   } catch (err) {
     console.error('pdf-parse failed:', err)
-    // Return empty array instead of throwing - PDF parsing may not work in serverless
-    console.log('PDF parsing failed. Please use CSV or Excel files instead.')
+    pdfError = err instanceof Error ? err.message : String(err)
+  }
+
+  // If PDF parsing failed completely, return helpful error
+  if (pdfError || !text) {
     return {
       transactions: [],
       debug: {
+        parserVersion: 'pdf-parse-failed',
         rowCount: 0,
-        headers: [],
+        headers: ['PDF parsing not supported'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
         sampleRows: [],
-        skippedRows: [{ reason: `PDF parsing failed: ${err}`, rawDate: null, rawAmount: null }]
+        skippedRows: [{
+          reason: pdfError
+            ? `PDF parsing failed: ${pdfError}. PDF parsing has limited support in serverless environments. Please save your document as CSV instead.`
+            : 'PDF contained no readable text. Please save as CSV instead.',
+          rawDate: null,
+          rawAmount: null
+        }]
       }
     }
   }
@@ -438,6 +514,27 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   }
 
   console.log('PDF transactions found:', transactions.length)
+
+  if (transactions.length === 0) {
+    // Show sample of what was found in the PDF
+    const sampleLines = lines.slice(0, 10).map(l => l.substring(0, 80))
+    return {
+      transactions: [],
+      debug: {
+        parserVersion: 'pdf-no-transactions',
+        rowCount: lines.length,
+        headers: ['PDF text extracted but no transactions found'],
+        columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+        sampleRows: [],
+        skippedRows: [{
+          reason: `Found ${lines.length} lines of text but no transaction patterns matched. Sample lines: ${sampleLines.join(' | ')}`,
+          rawDate: null,
+          rawAmount: null
+        }]
+      }
+    }
+  }
+
   return { transactions }
 }
 
