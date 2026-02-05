@@ -64,6 +64,32 @@ export interface ParsedTransaction {
   category?: string
 }
 
+export interface ParseResult {
+  transactions: ParsedTransaction[]
+  debug?: {
+    rowCount: number
+    headers: string[]
+    columnMapping: {
+      dateCol: string | null
+      descCol: string | null
+      amountCol: string | null
+      typeCol: string | null
+    }
+    sampleRows: Array<{
+      rawDate: unknown
+      rawDesc: unknown
+      rawAmount: unknown
+      parsedDate: string | null
+      parsedAmount: number
+    }>
+    skippedRows: Array<{
+      reason: string
+      rawDate: unknown
+      rawAmount: unknown
+    }>
+  }
+}
+
 export interface DashboardStats {
   totalIncome: number
   totalExpenses: number

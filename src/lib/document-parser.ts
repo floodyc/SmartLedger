@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import type { ParsedTransaction } from '@/types'
+import type { ParsedTransaction, ParseResult } from '@/types'
 
 // Common date formats to try parsing
 const DATE_FORMATS = [
@@ -144,7 +144,7 @@ function findColumn(headers: string[], possibilities: string[]): string | null {
   return null
 }
 
-export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[]> {
+export async function parseExcelFile(buffer: Buffer): Promise<ParseResult> {
   // Try parsing without cellDates first (keeps dates as strings)
   const workbook = XLSX.read(buffer, { type: 'buffer' })
   const sheetName = workbook.SheetNames[0]
@@ -155,11 +155,19 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
   console.log('Sheet names:', workbook.SheetNames)
   console.log('Data rows:', data.length)
   console.log('First row raw:', JSON.stringify(data[0]))
-  console.log('First 3 rows:', JSON.stringify(data.slice(0, 3)))
 
   if (data.length === 0) {
     console.log('No data rows found!')
-    return []
+    return {
+      transactions: [],
+      debug: {
+        rowCount: 0,
+        headers: [],
+        columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+        sampleRows: [],
+        skippedRows: [{ reason: 'No data rows in file', rawDate: null, rawAmount: null }]
+      }
+    }
   }
 
   const headers = Object.keys(data[0])
@@ -173,29 +181,50 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
 
   console.log('Column mapping:', { dateCol, descCol, amountCol, typeCol })
 
-  // If we can't find standard columns, try to use first columns (Date, Desc, Amount pattern is common)
-  const fallbackDateCol = dateCol || headers[0]
-  const fallbackDescCol = descCol || headers[1]
-  const fallbackAmountCol = amountCol || headers[2]
-
   const transactions: ParsedTransaction[] = []
+  const skippedRows: Array<{ reason: string; rawDate: unknown; rawAmount: unknown }> = []
+  const sampleRows: Array<{ rawDate: unknown; rawDesc: unknown; rawAmount: unknown; parsedDate: string | null; parsedAmount: number }> = []
 
-  for (const row of data) {
-    // Try mapped columns first, then fallbacks
-    const rawDate = row[dateCol || ''] ?? row[fallbackDateCol]
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i]
+    // Access columns directly - use the found column name or fall back to positional
+    const rawDate = dateCol ? row[dateCol] : row[headers[0]]
+    const rawDesc = descCol ? row[descCol] : row[headers[1]]
+    const rawAmount = amountCol ? row[amountCol] : row[headers[2]]
+
+    // Collect sample rows for debugging
+    if (i < 5) {
+      const testDate = parseDate(rawDate)
+      const { value: testAmount } = parseAmount(rawAmount)
+      sampleRows.push({
+        rawDate,
+        rawDesc,
+        rawAmount,
+        parsedDate: testDate ? testDate.toISOString() : null,
+        parsedAmount: testAmount
+      })
+    }
+
+    console.log('Processing row - rawDate:', rawDate, 'type:', typeof rawDate, 'rawAmount:', rawAmount, 'type:', typeof rawAmount)
+
     const date = parseDate(rawDate)
 
     if (!date) {
-      console.log('Could not parse date from:', rawDate)
+      console.log('Could not parse date from:', rawDate, 'typeof:', typeof rawDate)
+      if (skippedRows.length < 10) {
+        skippedRows.push({ reason: `Could not parse date (type: ${typeof rawDate})`, rawDate, rawAmount })
+      }
       continue
     }
 
-    const description = String(row[descCol || ''] ?? row[fallbackDescCol] ?? 'Unknown transaction')
-    const rawAmount = row[amountCol || ''] ?? row[fallbackAmountCol]
+    const description = String(rawDesc ?? 'Unknown transaction')
     const { value: amount, isNegative } = parseAmount(rawAmount)
 
     if (amount === 0) {
       console.log('Amount is 0, skipping:', rawAmount)
+      if (skippedRows.length < 10) {
+        skippedRows.push({ reason: 'Amount is 0', rawDate, rawAmount })
+      }
       continue
     }
 
@@ -227,10 +256,19 @@ export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[
   }
 
   console.log('Parsed transactions:', transactions.length)
-  return transactions
+  return {
+    transactions,
+    debug: {
+      rowCount: data.length,
+      headers,
+      columnMapping: { dateCol, descCol, amountCol, typeCol },
+      sampleRows,
+      skippedRows
+    }
+  }
 }
 
-export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]> {
+export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
   let text = ''
 
   try {
@@ -242,7 +280,16 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]>
     console.error('pdf-parse failed:', err)
     // Return empty array instead of throwing - PDF parsing may not work in serverless
     console.log('PDF parsing failed. Please use CSV or Excel files instead.')
-    return []
+    return {
+      transactions: [],
+      debug: {
+        rowCount: 0,
+        headers: [],
+        columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
+        sampleRows: [],
+        skippedRows: [{ reason: `PDF parsing failed: ${err}`, rawDate: null, rawAmount: null }]
+      }
+    }
   }
 
   const transactions: ParsedTransaction[] = []
@@ -286,10 +333,10 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParsedTransaction[]>
   }
 
   console.log('PDF transactions found:', transactions.length)
-  return transactions
+  return { transactions }
 }
 
-export async function parseWordFile(buffer: Buffer): Promise<ParsedTransaction[]> {
+export async function parseWordFile(buffer: Buffer): Promise<ParseResult> {
   const mammoth = await import('mammoth')
   const result = await mammoth.extractRawText({ buffer })
   const text = result.value
@@ -324,13 +371,13 @@ export async function parseWordFile(buffer: Buffer): Promise<ParsedTransaction[]
     }
   }
 
-  return transactions
+  return { transactions }
 }
 
 export async function parseDocument(
   buffer: Buffer,
   filename: string
-): Promise<ParsedTransaction[]> {
+): Promise<ParseResult> {
   const extension = filename.toLowerCase().split('.').pop()
 
   switch (extension) {

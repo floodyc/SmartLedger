@@ -63,7 +63,8 @@ export async function POST(request: NextRequest) {
     try {
       // Parse the document
       const buffer = Buffer.from(await file.arrayBuffer())
-      const parsedTransactions = await parseDocument(buffer, file.name)
+      const parseResult = await parseDocument(buffer, file.name)
+      const parsedTransactions = parseResult.transactions
 
       if (parsedTransactions.length === 0) {
         await prisma.document.update({
@@ -79,6 +80,7 @@ export async function POST(request: NextRequest) {
           document,
           transactions: [],
           message: 'Document processed but no transactions were found. Try uploading a bank statement or financial document with transaction data.',
+          debug: parseResult.debug, // Include debug info for troubleshooting
         })
       }
 
