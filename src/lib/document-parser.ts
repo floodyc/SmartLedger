@@ -146,16 +146,25 @@ function findColumn(headers: string[], possibilities: string[]): string | null {
 }
 
 export async function parseExcelFile(buffer: Buffer): Promise<ParsedTransaction[]> {
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true })
+  // Try parsing without cellDates first (keeps dates as strings)
+  const workbook = XLSX.read(buffer, { type: 'buffer' })
   const sheetName = workbook.SheetNames[0]
   const worksheet = workbook.Sheets[sheetName]
   const data = XLSX.utils.sheet_to_json(worksheet) as Record<string, unknown>[]
 
-  console.log('Parsed Excel/CSV data rows:', data.length)
-  if (data.length === 0) return []
+  console.log('=== XLSX PARSE DEBUG ===')
+  console.log('Sheet names:', workbook.SheetNames)
+  console.log('Data rows:', data.length)
+  console.log('First row raw:', JSON.stringify(data[0]))
+  console.log('First 3 rows:', JSON.stringify(data.slice(0, 3)))
+
+  if (data.length === 0) {
+    console.log('No data rows found!')
+    return []
+  }
 
   const headers = Object.keys(data[0])
-  console.log('Headers found:', headers)
+  console.log('Headers found:', JSON.stringify(headers))
 
   // Find relevant columns - expanded search terms
   const dateCol = findColumn(headers, ['date', 'transaction date', 'posted', 'posting date', 'trans date', 'value date'])
