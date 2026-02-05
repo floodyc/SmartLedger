@@ -35,18 +35,34 @@ const CATEGORY_PATTERNS: Record<string, string[]> = {
 }
 
 function parseDate(dateStr: string | number | Date | unknown): Date | null {
-  // Handle Excel serial dates (numbers like 45302 representing days since 1900)
-  if (typeof dateStr === 'number') {
-    // Excel serial date conversion
-    const excelEpoch = new Date(1899, 11, 30) // Excel epoch is Dec 30, 1899
-    const date = new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000)
-    if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
-      return date
+  console.log('parseDate input:', dateStr, 'type:', typeof dateStr)
+
+  // Handle Excel serial dates (numbers like 45306 representing days since 1900)
+  if (typeof dateStr === 'number' && dateStr > 1000 && dateStr < 100000) {
+    // Use xlsx's SSF utility for accurate conversion
+    try {
+      const parsed = XLSX.SSF.parse_date_code(dateStr)
+      if (parsed) {
+        const date = new Date(parsed.y, parsed.m - 1, parsed.d)
+        console.log('Excel serial date converted:', dateStr, '->', date.toISOString())
+        if (!isNaN(date.getTime())) {
+          return date
+        }
+      }
+    } catch {
+      // Fallback to manual calculation
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+      const date = new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000)
+      console.log('Excel serial date fallback:', dateStr, '->', date.toISOString())
+      if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
+        return date
+      }
     }
   }
 
   // Handle Date objects directly
   if (dateStr instanceof Date) {
+    console.log('Date object:', dateStr)
     return isNaN(dateStr.getTime()) ? null : dateStr
   }
 
@@ -60,6 +76,7 @@ function parseDate(dateStr: string | number | Date | unknown): Date | null {
     if (match) {
       const date = new Date(str)
       if (!isNaN(date.getTime())) {
+        console.log('Regex date parsed:', str, '->', date.toISOString())
         return date
       }
     }
@@ -68,9 +85,11 @@ function parseDate(dateStr: string | number | Date | unknown): Date | null {
   // Try direct parsing as fallback
   const date = new Date(str)
   if (!isNaN(date.getTime()) && date.getFullYear() > 1990 && date.getFullYear() < 2100) {
+    console.log('Direct date parsed:', str, '->', date.toISOString())
     return date
   }
 
+  console.log('Could not parse date:', dateStr)
   return null
 }
 
