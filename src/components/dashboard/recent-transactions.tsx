@@ -1,16 +1,41 @@
 "use client"
 
-import { ArrowUpRight, ArrowDownRight } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowUpRight, ArrowDownRight, Trash2, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { formatCurrency, formatDateShort, getColorForCategory } from '@/lib/utils'
 import type { Transaction } from '@/types'
 
 interface RecentTransactionsProps {
   transactions: Transaction[]
   loading: boolean
+  onDelete?: (id: string) => void
 }
 
-export function RecentTransactions({ transactions, loading }: RecentTransactionsProps) {
+export function RecentTransactions({ transactions, loading, onDelete }: RecentTransactionsProps) {
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this transaction?')) return
+
+    setDeletingId(id)
+    try {
+      const res = await fetch('/api/transactions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+
+      if (res.ok && onDelete) {
+        onDelete(id)
+      }
+    } catch (error) {
+      console.error('Error deleting transaction:', error)
+    } finally {
+      setDeletingId(null)
+    }
+  }
   if (loading) {
     return (
       <Card>
@@ -99,6 +124,20 @@ export function RecentTransactions({ transactions, loading }: RecentTransactions
                 {transaction.type === 'CREDIT' ? '+' : '-'}
                 {formatCurrency(transaction.amount)}
               </p>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleDelete(transaction.id)}
+                disabled={deletingId === transaction.id}
+                className="ml-2 h-8 w-8 p-0 text-gray-400 hover:text-red-600 hover:bg-red-50"
+              >
+                {deletingId === transaction.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+              </Button>
             </div>
           ))}
         </div>

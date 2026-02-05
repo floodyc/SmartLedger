@@ -208,7 +208,17 @@ export default function DashboardPage() {
             </div>
 
             {/* Recent Transactions */}
-            <RecentTransactions transactions={transactions} loading={loading} />
+            <RecentTransactions
+              transactions={transactions}
+              loading={loading}
+              onDelete={(id) => {
+                setTransactions(prev => prev.filter(t => t.id !== id))
+                // Refresh stats after delete
+                fetch('/api/analysis?type=dashboard')
+                  .then(res => res.json())
+                  .then(data => { if (data.stats) setStats(data.stats) })
+              }}
+            />
           </div>
 
           {/* Two Column Layout - Family and Export */}
