@@ -482,15 +482,15 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     return {
       transactions: [],
       debug: {
-        parserVersion: 'pdf-parse-failed',
+        parserVersion: 'pdf-v2-parse-failed',
         rowCount: 0,
-        headers: ['PDF parsing not supported'],
+        headers: ['PDF parsing failed'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
         sampleRows: [],
         skippedRows: [{
           reason: pdfError
-            ? `PDF parsing failed: ${pdfError}. PDF parsing has limited support in serverless environments. Please save your document as CSV instead.`
-            : 'PDF contained no readable text. Please save as CSV instead.',
+            ? `PDF parsing failed: ${pdfError}. This often happens with scanned PDFs or complex layouts. Try these alternatives: 1) Export your statement as CSV from your bank's website, 2) Copy the transactions into Excel and save as CSV, 3) Use a simpler PDF format.`
+            : 'PDF contained no readable text. The PDF may be image-based (scanned). Please export as CSV from your bank or manually enter transactions.',
           rawDate: null,
           rawAmount: null
         }]
@@ -500,30 +500,92 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
 
   const transactions: ParsedTransaction[] = []
   const lines = text.split('\n').filter(line => line.trim())
+  const skippedSamples: Array<{ line: string; reason: string }> = []
 
-  // Multiple transaction patterns to catch different bank statement formats
+  // Extensive transaction patterns for different bank statement formats
   const patterns = [
-    // Pattern 1: Date Description Amount (standard)
-    /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)\s*$/,
-    // Pattern 2: Date Description Amount with trailing text
-    /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.{10,}?)\s+(-?\$?[\d,]+\.?\d{2})/,
-    // Pattern 3: YYYY-MM-DD format
-    /(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(.+?)\s+(-?\$?[\d,]+\.?\d*)/,
+    // Standard US formats: MM/DD/YYYY or MM/DD/YY
+    { regex: /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/, name: 'us-standard' },
+    { regex: /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.{5,}?)\s+(-?\$?[\d,]+\.\d{2})/, name: 'us-mid-desc' },
+
+    // Date with dash separators: MM-DD-YYYY
+    { regex: /^(\d{1,2}-\d{1,2}-\d{2,4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/, name: 'dash-date' },
+
+    // ISO format: YYYY-MM-DD
+    { regex: /^(\d{4}-\d{2}-\d{2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/, name: 'iso-date' },
+
+    // Date at start, amount anywhere with $ sign
+    { regex: /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+\$?([\d,]+\.\d{2})/, name: 'date-start-amount-end' },
+
+    // European format: DD/MM/YYYY or DD.MM.YYYY
+    { regex: /^(\d{1,2}[\/\.]\d{1,2}[\/\.]\d{2,4})\s+(.+?)\s+(-?[\d\s,]+[,\.]\d{2})\s*$/, name: 'european' },
+
+    // Amount first, then date and description (some statements)
+    { regex: /^(-?\$?[\d,]+\.\d{2})\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+)$/, name: 'amount-first', amountFirst: true },
+
+    // Date followed by credit/debit columns: Date Description Debit Credit
+    { regex: /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.+?)\s+(-?[\d,]+\.\d{2})?\s+(-?[\d,]+\.\d{2})?$/, name: 'debit-credit-cols', hasBothCols: true },
+
+    // Compact format without spaces in amount
+    { regex: /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(.{3,50}?)\s*(-?\$?[\d,]+\.?\d*)$/, name: 'compact' },
+
+    // Month name formats: Jan 15, 2024 or January 15, 2024
+    { regex: /^([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})/, name: 'month-name' },
   ]
 
   for (const line of lines) {
-    for (const pattern of patterns) {
-      const match = line.match(pattern)
-      if (match) {
-        const [, dateStr, description, amountStr] = match
-        const date = parseDate(dateStr)
+    let matched = false
 
-        if (!date) continue
+    for (const { regex, name, amountFirst, hasBothCols } of patterns) {
+      const match = line.match(regex)
+      if (match) {
+        let dateStr: string, description: string, amountStr: string
+
+        if (amountFirst) {
+          [, amountStr, dateStr, description] = match
+        } else if (hasBothCols) {
+          // Handle debit/credit columns - take whichever has a value
+          const [, d, desc, debit, credit] = match
+          dateStr = d
+          description = desc
+          amountStr = debit || credit || '0'
+          // If we got credit, it's income; debit is expense
+          if (credit && !debit) {
+            amountStr = credit // Will be treated as positive
+          } else if (debit) {
+            amountStr = '-' + debit // Mark as negative for debit
+          }
+        } else {
+          [, dateStr, description, amountStr] = match
+        }
+
+        const date = parseDate(dateStr)
+        if (!date) {
+          if (skippedSamples.length < 5) {
+            skippedSamples.push({ line: line.substring(0, 60), reason: `Pattern ${name} matched but date invalid: ${dateStr}` })
+          }
+          continue
+        }
 
         const { value: amount, isNegative } = parseAmount(amountStr)
-        if (amount === 0) continue
+        if (amount === 0) {
+          if (skippedSamples.length < 5) {
+            skippedSamples.push({ line: line.substring(0, 60), reason: `Pattern ${name} matched but amount is 0` })
+          }
+          continue
+        }
 
-        const type: 'CREDIT' | 'DEBIT' = isNegative ? 'DEBIT' : 'CREDIT'
+        // Validate description isn't just numbers or too short
+        const cleanDesc = description.replace(/[\d$,.\-\s]/g, '').trim()
+        if (cleanDesc.length < 2) {
+          if (skippedSamples.length < 5) {
+            skippedSamples.push({ line: line.substring(0, 60), reason: `Description too short: "${description}"` })
+          }
+          continue
+        }
+
+        const type: 'CREDIT' | 'DEBIT' = isNegative ? 'DEBIT' :
+          CREDIT_KEYWORDS.some(k => description.toLowerCase().includes(k)) ? 'CREDIT' : 'DEBIT'
         const category = detectCategory(description)
 
         transactions.push({
@@ -533,7 +595,18 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
           type,
           category,
         })
-        break // Found a match, move to next line
+        matched = true
+        break
+      }
+    }
+
+    // Log lines that look like they might be transactions but didn't match
+    if (!matched && skippedSamples.length < 10) {
+      // Check if line contains both a date-like pattern and a number
+      const hasDate = /\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(line) || /\d{4}[\/\-]\d{2}[\/\-]\d{2}/.test(line)
+      const hasAmount = /\$?[\d,]+\.\d{2}/.test(line)
+      if (hasDate && hasAmount && line.length > 15) {
+        skippedSamples.push({ line: line.substring(0, 80), reason: 'Looks like transaction but no pattern matched' })
       }
     }
   }
@@ -542,17 +615,23 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
 
   if (transactions.length === 0) {
     // Show sample of what was found in the PDF
-    const sampleLines = lines.slice(0, 10).map(l => l.substring(0, 80))
+    const sampleLines = lines.slice(0, 8).map(l => l.substring(0, 70))
     return {
       transactions: [],
       debug: {
-        parserVersion: 'pdf-no-transactions',
+        parserVersion: 'pdf-v2-no-transactions',
         rowCount: lines.length,
-        headers: ['PDF text extracted but no transactions found'],
+        headers: ['PDF text extracted but no transactions matched'],
         columnMapping: { dateCol: null, descCol: null, amountCol: null, typeCol: null },
-        sampleRows: [],
+        sampleRows: skippedSamples.map(s => ({
+          rawDate: s.reason,
+          rawDesc: s.line,
+          rawAmount: null,
+          parsedDate: null,
+          parsedAmount: 0
+        })),
         skippedRows: [{
-          reason: `Found ${lines.length} lines of text but no transaction patterns matched. Sample lines: ${sampleLines.join(' | ')}`,
+          reason: `Extracted ${lines.length} lines but no transaction patterns matched. This PDF format may not be supported. For best results: 1) Download CSV from your bank's website, 2) Copy data to Excel and save as CSV. Sample content: ${sampleLines.join(' | ')}`,
           rawDate: null,
           rawAmount: null
         }]
@@ -560,7 +639,27 @@ export async function parsePDFFile(buffer: Buffer): Promise<ParseResult> {
     }
   }
 
-  return { transactions }
+  return {
+    transactions,
+    debug: {
+      parserVersion: 'pdf-v2-success',
+      rowCount: lines.length,
+      headers: ['PDF parsed successfully'],
+      columnMapping: { dateCol: 'auto', descCol: 'auto', amountCol: 'auto', typeCol: null },
+      sampleRows: transactions.slice(0, 3).map(t => ({
+        rawDate: t.date,
+        rawDesc: t.description,
+        rawAmount: t.amount,
+        parsedDate: t.date,
+        parsedAmount: t.amount
+      })),
+      skippedRows: skippedSamples.length > 0 ? [{
+        reason: `${skippedSamples.length} potential transactions skipped`,
+        rawDate: skippedSamples[0]?.line || null,
+        rawAmount: skippedSamples[0]?.reason || null
+      }] : []
+    }
+  }
 }
 
 export async function parseWordFile(buffer: Buffer): Promise<ParseResult> {
